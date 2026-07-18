@@ -87,4 +87,11 @@ class CadGLSurfaceView @JvmOverloads constructor(
         val dy = event.getY(0) - event.getY(1)
         return sqrt((dx * dx + dy * dy).toDouble()).toFloat()
     }
+
+    fun clearScene() {
+        queueEvent {
+            renderer.clearSceneOnGlThread()
+        }
+        requestRender()
+    }
 }

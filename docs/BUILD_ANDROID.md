@@ -14,7 +14,32 @@ Para compilar de manera exitosa el núcleo nativo de C++ y el frontend en Kotlin
 
 ---
 
-## 2. Compilación del Proyecto Completo
+## 2. Compilación de OpenCASCADE (OCCT)
+
+Para compilar y enlazar la variante de modelado CAD real de OpenCASCADE para Android `arm64-v8a`, siga estos pasos:
+
+### 2.1 Descargar y Compilar
+Ejecute el script de compilación automatizado:
+```bash
+./scripts/build_opencascade_android.sh
+```
+Este script:
+1. Lee las versiones fijas desde `third-party/versions.lock`.
+2. Descarga la versión exacta y verifica el hash del commit de OCCT mediante `scripts/fetch_native_sources.sh`.
+3. Invoca a CMake y Ninja con la toolchain oficial del NDK de Android.
+4. Compila solo los módulos necesarios (Kernel, BRep, Modelado, Mallado y STEP/IGES), desactivando módulos pesados de escritorio.
+5. Instala las cabeceras y las bibliotecas dinámicas `.so` en `third-party/opencascade/arm64-v8a/`.
+
+### 2.2 Verificar Artefactos
+Para validar que la compilación de OCCT se completó con éxito y generó todos los componentes requeridos, ejecute:
+```bash
+./scripts/verify_native_artifacts.sh
+```
+El script comprobará la existencia de cabeceras críticas (`Standard.hxx`), todas las bibliotecas de modelado y STEP, y reportará sus dependencias internas.
+
+---
+
+## 3. Compilación del Proyecto Completo
 
 Para ejecutar la compilación incremental y generar el APK de depuración (Debug), puedes utilizar la terminal o Android Studio:
 

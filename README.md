@@ -37,6 +37,14 @@ Asegúrate de contar con el SDK de Android y NDK instalado.
 source scripts/setup_android_env.sh
 ```
 
+### 1.5 Compilar OpenCASCADE (OBLIGATORIO para variante CAD real)
+Antes de compilar la aplicación principal, compile las dependencias de modelado de OpenCASCADE para ARM64:
+```bash
+./scripts/build_opencascade_android.sh
+# Opcional: Verificar artefactos generados
+./scripts/verify_native_artifacts.sh
+```
+
 ### 2. Ejecutar la Compilación Completa
 ```bash
 gradle assembleDebug

@@ -49,7 +49,7 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
     @Volatile
     private var meshNeedsUpdate = false
 
-    // Bounding Box and dynamic centering state (preserving original coordinates)
+    // Bounding Box state
     private var modelMinX = -20f
     private var modelMinY = -20f
     private var modelMinZ = -20f
@@ -57,10 +57,6 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
     private var modelMaxY = 20f
     private var modelMaxZ = 20f
 
-    private var modelCenterX = 0f
-    private var modelCenterY = 0f
-    private var modelCenterZ = 0f
-    private var modelSize = 40f
     private var aspect = 1.0f
 
     fun setActiveDocument(documentId: Long) {
@@ -72,19 +68,26 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
         meshNeedsUpdate = true
     }
 
-    // Centering and zoom visual fitting (fitAll)
     fun fitAll() {
-        cameraController.panX = 0f
-        cameraController.panY = 0f
-        cameraController.distance = (modelSize * 1.5f).coerceIn(10f, 5000f)
-        cameraController.angleX = -45f
-        cameraController.angleY = 45f
+        cameraController.fitBounds(
+            modelMinX, modelMinY, modelMinZ,
+            modelMaxX, modelMaxY, modelMaxZ,
+            45f, aspect
+        )
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES30.glClearColor(0.12f, 0.15f, 0.18f, 1.0f) // Sleek dark slate industrial background
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthFunc(GLES30.GL_LEQUAL)
+
+        // Reset all handles to zero because context was recreated
+        shaderProgram = 0
+        gridVbo = 0
+        axesVbo = 0
+        meshVbo = 0
+        meshIbo = 0
+        meshIndexCount = 0
 
         // Compile and link shader program
         shaderProgram = createProgram(vertexShaderSource, fragmentShaderSource)
@@ -99,11 +102,14 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
         flatShadingLoc = GLES30.glGetUniformLocation(shaderProgram, "uFlatShading")
 
         setupGridAndAxes()
+
+        // Active mesh needs to be reloaded on context recreation
+        meshNeedsUpdate = true
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
-        aspect = width.toFloat() / height.toFloat()
+        aspect = if (height == 0) 1.0f else width.toFloat() / height.toFloat()
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -111,33 +117,46 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
         if (shaderProgram == 0) return
 
-        // 1. Setup dynamic clipping planes proportional to model size to prevent z-fighting or geometric clipping
-        val nearPlane = (cameraController.distance - modelSize * 1.2f).coerceAtLeast(0.1f)
-        val farPlane = (cameraController.distance + modelSize * 2.5f).coerceAtLeast(100f)
+        // 1. Calculate dynamic near/far planes based on distance and model radius
+        val nearPlane = (cameraController.distance - cameraController.modelRadius * 1.5f).coerceAtLeast(0.1f)
+        val farPlane = (cameraController.distance + cameraController.modelRadius * 2.5f).coerceAtLeast(10f)
         Matrix.perspectiveM(projectionMatrix, 0, 45.0f, aspect, nearPlane, farPlane)
 
-        // 2. Calculate camera transform matrices
-        Matrix.setIdentityM(viewMatrix, 0)
-        // Translate view based on distance and pan
-        Matrix.translateM(viewMatrix, 0, cameraController.panX, cameraController.panY, -cameraController.distance)
-        // Rotate camera based on orbit angles
-        Matrix.rotateM(viewMatrix, 0, cameraController.angleX, 1.0f, 0.0f, 0.0f)
-        Matrix.rotateM(viewMatrix, 0, cameraController.angleY, 0.0f, 1.0f, 0.0f)
+        // 2. Calculate eye position using yaw, pitch, distance, and target
+        val yawRad = Math.toRadians(cameraController.yawDegrees.toDouble())
+        val pitchRad = Math.toRadians(cameraController.pitchDegrees.toDouble())
+
+        val cosPitch = kotlin.math.cos(pitchRad)
+        val sinPitch = kotlin.math.sin(pitchRad)
+        val cosYaw = kotlin.math.cos(yawRad)
+        val sinYaw = kotlin.math.sin(yawRad)
+
+        val eyeX = (cameraController.targetX + cameraController.distance * cosPitch * cosYaw).toFloat()
+        val eyeY = (cameraController.targetY + cameraController.distance * cosPitch * sinYaw).toFloat()
+        val eyeZ = (cameraController.targetZ + cameraController.distance * sinPitch).toFloat()
+
+        // 3. Build view matrix looking at target, with Z as vertical axis
+        Matrix.setLookAtM(
+            viewMatrix, 0,
+            eyeX, eyeY, eyeZ,
+            cameraController.targetX, cameraController.targetY, cameraController.targetZ,
+            0f, 0f, 1f
+        )
 
         GLES30.glUseProgram(shaderProgram)
 
-        // 3. Query and upload CAD Mesh if updated
+        // 4. Query and upload CAD Mesh if updated
         if (meshNeedsUpdate && activeDocumentId != 0L) {
             uploadCadMesh()
             meshNeedsUpdate = false
         }
 
-        // 4. Draw Grid and Reference Axes (with flat shading)
+        // 5. Draw Grid and Reference Axes (with flat shading)
         GLES30.glUniform1i(flatShadingLoc, 1) // Enable flat shading
         drawGrid()
         drawAxes()
 
-        // 5. Draw CAD Geometries (with Phong shading)
+        // 6. Draw CAD Geometries (with Phong shading)
         if (meshIndexCount > 0) {
             GLES30.glUniform1i(flatShadingLoc, 0) // Enable Phong lighting
             drawCadMesh()
@@ -150,28 +169,12 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
             if (meshData != null && meshData.vertexCount > 0 && meshData.indexCount > 0) {
                 meshIndexCount = meshData.indexCount
                 
-                // Track absolute bounding box bounds to compute dynamic centering matrix offsets and near/far plane depth
                 modelMinX = meshData.minX
                 modelMinY = meshData.minY
                 modelMinZ = meshData.minZ
                 modelMaxX = meshData.maxX
                 modelMaxY = meshData.maxY
                 modelMaxZ = meshData.maxZ
-
-                modelCenterX = (modelMinX + modelMaxX) / 2f
-                modelCenterY = (modelMinY + modelMaxY) / 2f
-                modelCenterZ = (modelMinZ + modelMaxZ) / 2f
-
-                val dx = modelMaxX - modelMinX
-                val dy = modelMaxY - modelMinY
-                val dz = modelMaxZ - modelMinZ
-                modelSize = kotlin.math.sqrt((dx*dx + dy*dy + dz*dz).toDouble()).toFloat().coerceAtLeast(1f)
-
-                // Color defaults to high-fidelity slate/teal blue
-                meshColor[0] = 0.2f
-                meshColor[1] = 0.6f
-                meshColor[2] = 0.8f
-                meshColor[3] = 1.0f
 
                 // Upload Vertex Buffer
                 if (meshVbo == 0) {
@@ -198,10 +201,14 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
                 GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
                 GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
 
-                // Automatically trigger fitAll to view the model centered on first import
-                fitAll()
+                // Automatically fit bounds once after successfully loading a valid mesh
+                cameraController.fitBounds(
+                    modelMinX, modelMinY, modelMinZ,
+                    modelMaxX, modelMaxY, modelMaxZ,
+                    45f, aspect
+                )
             } else {
-                meshIndexCount = 0
+                clearMeshBuffers()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error uploading CAD mesh: ${e.message}")
@@ -211,9 +218,8 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
     private fun drawCadMesh() {
         if (meshVbo == 0 || meshIbo == 0) return
 
-        // Dynamic visual centering using model-matrix translation while keeping underlying coordinates clean and original!
+        // Maintain modelMatrix as identity (keeps world coordinates aligned with grid and axes)
         Matrix.setIdentityM(modelMatrix, 0)
-        Matrix.translateM(modelMatrix, 0, -modelCenterX, -modelCenterY, -modelCenterZ)
         
         Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, mvMatrix, 0)
@@ -239,6 +245,41 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
         GLES30.glDisableVertexAttribArray(1)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+    }
+
+    fun clearSceneOnGlThread() {
+        clearMeshBuffers()
+    }
+
+    private fun clearMeshBuffers() {
+        if (meshVbo != 0) {
+            val buffers = intArrayOf(meshVbo)
+            GLES30.glDeleteBuffers(1, buffers, 0)
+            meshVbo = 0
+        }
+        if (meshIbo != 0) {
+            val buffers = intArrayOf(meshIbo)
+            GLES30.glDeleteBuffers(1, buffers, 0)
+            meshIbo = 0
+        }
+        meshIndexCount = 0
+    }
+
+    private fun clearGlResources() {
+        if (gridVbo != 0) {
+            val buffers = intArrayOf(gridVbo)
+            GLES30.glDeleteBuffers(1, buffers, 0)
+            gridVbo = 0
+        }
+        if (axesVbo != 0) {
+            val buffers = intArrayOf(axesVbo)
+            GLES30.glDeleteBuffers(1, buffers, 0)
+            axesVbo = 0
+        }
+        if (shaderProgram != 0) {
+            GLES30.glDeleteProgram(shaderProgram)
+            shaderProgram = 0
+        }
     }
 
     private fun setupGridAndAxes() {

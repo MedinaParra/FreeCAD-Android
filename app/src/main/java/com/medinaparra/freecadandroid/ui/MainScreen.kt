@@ -35,6 +35,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
 import com.medinaparra.freecadandroid.viewmodel.CadViewModel
 import com.medinaparra.freecadandroid.importer.ImportState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
 
 // State representer for CAD Objects in UI
 data class CadObjectState(
@@ -674,6 +677,21 @@ fun MainScreen(viewModel: CadViewModel = viewModel()) {
     // Hold reference to GLSurfaceView to request updates in real-time
     var glSurfaceViewRef by remember { mutableStateOf<CadGLSurfaceView?>(null) }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, glSurfaceViewRef) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> glSurfaceViewRef?.onResume()
+                Lifecycle.Event.ON_PAUSE -> glSurfaceViewRef?.onPause()
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
 
 
     // Trigger viewport redraws when the objects array gets updated
@@ -863,6 +881,8 @@ fun MainScreen(viewModel: CadViewModel = viewModel()) {
                             if (activeDocId != 0L) {
                                 renderer.setActiveDocument(activeDocId)
                                 renderer.requestMeshUpdate()
+                            } else {
+                                clearScene()
                             }
                         }
                     },
@@ -870,6 +890,10 @@ fun MainScreen(viewModel: CadViewModel = viewModel()) {
                     update = { view ->
                         if (activeDocId != 0L) {
                             view.renderer.setActiveDocument(activeDocId)
+                            view.renderer.requestMeshUpdate()
+                            view.requestRender()
+                        } else {
+                            view.clearScene()
                         }
                     }
                 )
@@ -1288,11 +1312,8 @@ fun MainScreen(viewModel: CadViewModel = viewModel()) {
                                     Text("Ejecutar", fontSize = 10.sp, color = Color.White)
                                 }
                                 Button(
-                                    onClick = {
-                                        isMacroRunning = false
-                                        viewModel.appendConsoleLog(">>> Macro stopped cooperatively.\n")
-                                    },
-                                    enabled = isMacroRunning,
+                                    onClick = {},
+                                    enabled = false,
                                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                     modifier = Modifier.height(26.dp)

@@ -78,6 +78,11 @@ android {
       useLegacyPackaging = true
     }
   }
+  sourceSets {
+    getByName("main") {
+      jniLibs.srcDirs("src/main/jniLibs", "../third-party/opencascade/arm64-v8a/lib")
+    }
+  }
 }
 
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
