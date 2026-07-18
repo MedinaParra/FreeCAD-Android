@@ -5,11 +5,16 @@
 #include <mutex>
 #include "MeshData.hpp"
 
+#ifdef USE_OCCT
+#include <TopoDS_Shape.hxx>
+#endif
+
 enum class ObjectType {
     BOX,
     CYLINDER,
     SPHERE,
-    CONE
+    CONE,
+    IMPORTED
 };
 
 struct CadObject {
@@ -29,6 +34,11 @@ public:
     std::unordered_map<uint64_t, std::shared_ptr<CadObject>> objects;
     uint64_t nextObjectId = 1;
 
+#ifdef USE_OCCT
+    TopoDS_Shape importedShape;
+    bool hasImportedShape = false;
+#endif
+
     CadDocument(uint64_t docId, const std::string& docName);
     uint64_t createBox(const std::string& name, double l, double w, double h);
     uint64_t createCylinder(const std::string& name, double r, double h);
@@ -39,6 +49,10 @@ public:
     bool deleteObject(uint64_t objId);
     bool setObjectVisibility(uint64_t objId, bool visible);
     bool recompute();
+    
+    bool loadStep(const std::string& filePath);
+    bool loadBrep(const std::string& filePath);
+
     MeshData getSceneMesh();
 };
 

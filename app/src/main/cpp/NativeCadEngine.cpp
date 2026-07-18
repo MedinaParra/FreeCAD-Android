@@ -1,18 +1,198 @@
 #include "NativeCadEngine.hpp"
 #include <cmath>
+#include <algorithm>
+#include <android/log.h>
+
+#define LOG_TAG "NativeCadEngine"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
-// Forward declarations of helper mesh generators
+#ifdef USE_OCCT
+#include <BRep_Builder.hxx>
+#include <BRepTools.hxx>
+#include <Bnd_Box.hxx>
+#include <BRepBndLib.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Face.hxx>
+#include <Poly_Triangulation.hxx>
+#include <BRep_Tool.hxx>
+#include <TColgp_Array1OfPnt.hxx>
+#include <Poly_Array1OfTriangle.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
+#include <TopLoc_Location.hxx>
+#include <STEPControl_Reader.hxx>
+#include <IFSelect_ReturnStatus.hxx>
+#endif
+
+// Helper mesh generators for primitives
 void generateBoxMesh(double l, double w, double h, double tx, double ty, double tz, MeshData& outMesh, float color[4]);
 void generateCylinderMesh(double r, double h, double tx, double ty, double tz, MeshData& outMesh, float color[4]);
 void generateSphereMesh(double r, double tx, double ty, double tz, MeshData& outMesh, float color[4]);
 void generateConeMesh(double r1, double r2, double h, double tx, double ty, double tz, MeshData& outMesh, float color[4]);
 
+#ifdef USE_OCCT
+MeshData triangulateShape(const TopoDS_Shape& shape, double linearDeflection = 0.5, double angularDeflection = 0.5) {
+    MeshData mesh;
+    if (shape.IsNull()) {
+        LOGE("triangulateShape: Shape is null!");
+        return mesh;
+    }
+
+    LOGI("triangulateShape: Starting triangulation using BRepMesh_IncrementalMesh...");
+    // 1. Compute triangulation on the solid shape
+    BRepMesh_IncrementalMesh mesher(shape, linearDeflection, Standard_True, angularDeflection);
+
+    double minX = 1e9, maxX = -1e9;
+    double minY = 1e9, maxY = -1e9;
+    double minZ = 1e9, maxZ = -1e9;
+
+    // 2. Explore all faces
+    TopExp_Explorer explorer(shape, TopAbs_FACE);
+    int faceCount = 0;
+    for (; explorer.More(); explorer.Next()) {
+        faceCount++;
+        const TopoDS_Face& face = TopoDS::Face(explorer.Current());
+        TopLoc_Location loc;
+        Handle(Poly_Triangulation) triangulation = BRep_Tool::Triangulation(face, loc);
+        if (triangulation.IsNull()) {
+            continue;
+        }
+
+        const TColgp_Array1OfPnt& nodes = triangulation->Nodes();
+        const Poly_Array1OfTriangle& triangles = triangulation->Triangles();
+        gp_Trsf trans = loc.Transformation();
+
+        uint32_t startVertexIdx = mesh.vertices.size();
+
+        // Copy vertices in absolute coordinates
+        for (Standard_Integer i = nodes.Lower(); i <= nodes.Upper(); ++i) {
+            gp_Pnt p = nodes.Value(i).Transformed(trans);
+            Vertex v;
+            v.x = static_cast<float>(p.X());
+            v.y = static_cast<float>(p.Y());
+            v.z = static_cast<float>(p.Z());
+
+            // Initialize default normal
+            v.nx = 0.0f; v.ny = 0.0f; v.nz = 0.0f;
+            mesh.vertices.push_back(v);
+
+            // Bounding box tracking
+            if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+            if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+            if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+        }
+
+        // Copy indices with CCW orientation winding verification
+        bool reversed = (face.Orientation() == TopAbs_REVERSED);
+        for (Standard_Integer i = triangles.Lower(); i <= triangles.Upper(); ++i) {
+            Standard_Integer n1, n2, n3;
+            triangles.Value(i).Get(n1, n2, n3);
+
+            uint32_t idx1 = startVertexIdx + (n1 - nodes.Lower());
+            uint32_t idx2 = startVertexIdx + (n2 - nodes.Lower());
+            uint32_t idx3 = startVertexIdx + (n3 - nodes.Lower());
+
+            if (reversed) {
+                mesh.indices.push_back(idx1);
+                mesh.indices.push_back(idx3);
+                mesh.indices.push_back(idx2);
+            } else {
+                mesh.indices.push_back(idx1);
+                mesh.indices.push_back(idx2);
+                mesh.indices.push_back(idx3);
+            }
+        }
+    }
+
+    LOGI("triangulateShape: Traversed %d faces. Vertices: %zu, Indices: %zu", faceCount, mesh.vertices.size(), mesh.indices.size());
+
+    // Fallback bounds if no vertices exist
+    if (mesh.vertices.empty()) {
+        minX = minY = minZ = -10.0;
+        maxX = maxY = maxZ = 10.0;
+    }
+
+    mesh.minX = static_cast<float>(minX);
+    mesh.maxX = static_cast<float>(maxX);
+    mesh.minY = static_cast<float>(minY);
+    mesh.maxY = static_cast<float>(maxY);
+    mesh.minZ = static_cast<float>(minZ);
+    mesh.maxZ = static_cast<float>(maxZ);
+
+    // Compute robust, normalized smooth vertex normals for Phong rendering
+    std::vector<int> normalCount(mesh.vertices.size(), 0);
+    for (size_t i = 0; i < mesh.indices.size(); i += 3) {
+        uint32_t i1 = mesh.indices[i];
+        uint32_t i2 = mesh.indices[i+1];
+        uint32_t i3 = mesh.indices[i+2];
+
+        Vertex& v1 = mesh.vertices[i1];
+        Vertex& v2 = mesh.vertices[i2];
+        Vertex& v3 = mesh.vertices[i3];
+
+        float ux = v2.x - v1.x;
+        float uy = v2.y - v1.y;
+        float uz = v2.z - v1.z;
+
+        float vx = v3.x - v1.x;
+        float vy = v3.y - v1.y;
+        float vz = v3.z - v1.z;
+
+        float nx = uy * vz - uz * vy;
+        float ny = uz * vx - ux * vz;
+        float nz = ux * vy - uy * vx;
+
+        float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+        if (len > 1e-6f) {
+            nx /= len; ny /= len; nz /= len;
+            v1.nx += nx; v1.ny += ny; v1.nz += nz;
+            v2.nx += nx; v2.ny += ny; v2.nz += nz;
+            v3.nx += nx; v3.ny += ny; v3.nz += nz;
+            normalCount[i1]++;
+            normalCount[i2]++;
+            normalCount[i3]++;
+        }
+    }
+
+    for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+        if (normalCount[i] > 0) {
+            float nx = mesh.vertices[i].nx;
+            float ny = mesh.vertices[i].ny;
+            float nz = mesh.vertices[i].nz;
+            float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+            if (len > 1e-6f) {
+                mesh.vertices[i].nx = nx / len;
+                mesh.vertices[i].ny = ny / len;
+                mesh.vertices[i].nz = nz / len;
+            } else {
+                mesh.vertices[i].nx = 0.0f;
+                mesh.vertices[i].ny = 0.0f;
+                mesh.vertices[i].nz = 1.0f;
+            }
+        } else {
+            mesh.vertices[i].nx = 0.0f;
+            mesh.vertices[i].ny = 0.0f;
+            mesh.vertices[i].nz = 1.0f;
+        }
+    }
+
+    return mesh;
+}
+#endif
+
 CadDocument::CadDocument(uint64_t docId, const std::string& docName)
-    : id(docId), name(docName) {}
+    : id(docId), name(docName) {
+#ifdef USE_OCCT
+    hasImportedShape = false;
+#endif
+}
 
 uint64_t CadDocument::createBox(const std::string& name, double l, double w, double h) {
     auto obj = std::make_shared<CadObject>();
@@ -102,12 +282,65 @@ bool CadDocument::setObjectVisibility(uint64_t objId, bool visible) {
 }
 
 bool CadDocument::recompute() {
-    // Phase 0: Recompute acts as a no-op / local flag sync
     return true;
 }
 
+bool CadDocument::loadStep(const std::string& filePath) {
+#ifdef USE_OCCT
+    LOGI("loadStep: Reading STEP file: %s", filePath.c_str());
+    STEPControl_Reader reader;
+    IFSelect_ReturnStatus status = reader.ReadFile(filePath.c_str());
+    if (status != IFSelect_RetDone) {
+        LOGE("loadStep: ReadFile failed with status: %d", status);
+        return false;
+    }
+    
+    reader.TransferRoots();
+    importedShape = reader.OneShape();
+    hasImportedShape = !importedShape.IsNull();
+    
+    if (hasImportedShape) {
+        LOGI("loadStep: Successfully loaded solid shape from STEP.");
+    } else {
+        LOGE("loadStep: Result shape is null.");
+    }
+    return hasImportedShape;
+#else
+    LOGE("loadStep: OpenCASCADE is NOT compiled in this build! Cannot import STEP file natively.");
+    (void)filePath;
+    return false;
+#endif
+}
+
+bool CadDocument::loadBrep(const std::string& filePath) {
+#ifdef USE_OCCT
+    LOGI("loadBrep: Reading BRep/FCStd file: %s", filePath.c_str());
+    TopoDS_Shape shape;
+    BRep_Builder builder;
+    Standard_Boolean result = BRepTools::Read(shape, filePath.c_str(), builder);
+    if (!result || shape.IsNull()) {
+        LOGE("loadBrep: BRepTools::Read failed or shape is null.");
+        return false;
+    }
+    importedShape = shape;
+    hasImportedShape = true;
+    LOGI("loadBrep: Successfully loaded solid shape from BRep.");
+    return true;
+#else
+    LOGE("loadBrep: OpenCASCADE is NOT compiled in this build! Cannot import BRep file natively.");
+    (void)filePath;
+    return false;
+#endif
+}
+
 MeshData CadDocument::getSceneMesh() {
-    // Find bounding box to scale and center
+#ifdef USE_OCCT
+    if (hasImportedShape) {
+        return triangulateShape(importedShape, 0.5, 0.5);
+    }
+#endif
+
+    // Fallback: build combined mesh from primitives
     double minX = 1e9, maxX = -1e9;
     double minY = 1e9, maxY = -1e9;
     double minZ = 1e9, maxZ = -1e9;
@@ -153,44 +386,41 @@ MeshData CadDocument::getSceneMesh() {
     }
 
     if (minX > maxX) {
-        minX = -10.0; maxX = 10.0;
-        minY = -10.0; maxY = 10.0;
-        minZ = -10.0; maxZ = 10.0;
+        minX = -40.0; maxX = 40.0;
+        minY = -40.0; maxY = 40.0;
+        minZ = -40.0; maxZ = 40.0;
     }
 
-    double length = maxX - minX;
-    double width = maxY - minY;
-    double height = maxZ - minZ;
-    double maxVal = std::max(length, std::max(width, height));
-    double visualScale = (maxVal > 200.0) ? (100.0 / maxVal) : 1.0;
-
-    double centerX = (minX + maxX) / 2.0;
-    double centerY = (minY + maxY) / 2.0;
-    double centerZ = (minZ + maxZ) / 2.0;
-
     MeshData combinedMesh;
+    combinedMesh.minX = static_cast<float>(minX);
+    combinedMesh.maxX = static_cast<float>(maxX);
+    combinedMesh.minY = static_cast<float>(minY);
+    combinedMesh.maxY = static_cast<float>(maxY);
+    combinedMesh.minZ = static_cast<float>(minZ);
+    combinedMesh.maxZ = static_cast<float>(maxZ);
+
     for (const auto& pair : objects) {
         const auto& obj = pair.second;
         if (!obj->visible) continue;
 
-        double tx = (obj->translation[0] - centerX) * visualScale;
-        double ty = (obj->translation[1] - centerY) * visualScale;
-        double tz = (obj->translation[2] - centerZ) * visualScale;
+        double tx = obj->translation[0];
+        double ty = obj->translation[1];
+        double tz = obj->translation[2];
 
         if (obj->type == ObjectType::BOX) {
-            generateBoxMesh(obj->dimensions[0] * visualScale, obj->dimensions[1] * visualScale, obj->dimensions[2] * visualScale,
+            generateBoxMesh(obj->dimensions[0], obj->dimensions[1], obj->dimensions[2],
                             tx, ty, tz,
                             combinedMesh, obj->color);
         } else if (obj->type == ObjectType::CYLINDER) {
-            generateCylinderMesh(obj->dimensions[0] * visualScale, obj->dimensions[1] * visualScale,
+            generateCylinderMesh(obj->dimensions[0], obj->dimensions[1],
                                  tx, ty, tz,
                                  combinedMesh, obj->color);
         } else if (obj->type == ObjectType::SPHERE) {
-            generateSphereMesh(obj->dimensions[0] * visualScale,
+            generateSphereMesh(obj->dimensions[0],
                                tx, ty, tz,
                                combinedMesh, obj->color);
         } else if (obj->type == ObjectType::CONE) {
-            generateConeMesh(obj->dimensions[0] * visualScale, obj->dimensions[1] * visualScale, obj->dimensions[2] * visualScale,
+            generateConeMesh(obj->dimensions[0], obj->dimensions[1], obj->dimensions[2],
                              tx, ty, tz,
                              combinedMesh, obj->color);
         }
@@ -224,7 +454,7 @@ std::shared_ptr<CadDocument> NativeCadEngine::getDocument(uint64_t docId) {
 }
 
 // ------------------------------------------------------------------------
-// Mesh Generation Helpers
+// Primitive Mesh Generation Helpers (No scaling applied, keeps absolute coordinates)
 // ------------------------------------------------------------------------
 
 void generateBoxMesh(double l, double w, double h, double tx, double ty, double tz, MeshData& outMesh, float color[4]) {
@@ -242,32 +472,31 @@ void generateBoxMesh(double l, double w, double h, double tx, double ty, double 
 
     FaceDef faces[] = {
         // Front face (+X)
-        {{1.0f, 0.0f, 0.0f}, {{lf, 0.0f, 0.0f}, {lf, wf, 0.0f}, {lf, wf, hf}, {lf, 0.0f, hf}}},
+        {{1.0f, 0.0f, 0.0f}, {{lf + dxf, dyf, dzf}, {lf + dxf, wf + dyf, dzf}, {lf + dxf, wf + dyf, hf + dzf}, {lf + dxf, dyf, hf + dzf}}},
         // Back face (-X)
-        {{-1.0f, 0.0f, 0.0f}, {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, hf}, {0.0f, wf, hf}, {0.0f, wf, 0.0f}}},
+        {{-1.0f, 0.0f, 0.0f}, {{dxf, dyf, dzf}, {dxf, dyf, hf + dzf}, {dxf, wf + dyf, hf + dzf}, {dxf, wf + dyf, dzf}}},
         // Right face (+Y)
-        {{0.0f, 1.0f, 0.0f}, {{0.0f, wf, 0.0f}, {0.0f, wf, hf}, {lf, wf, hf}, {lf, wf, 0.0f}}},
+        {{0.0f, 1.0f, 0.0f}, {{dxf, wf + dyf, dzf}, {dxf, wf + dyf, hf + dzf}, {lf + dxf, wf + dyf, hf + dzf}, {lf + dxf, wf + dyf, dzf}}},
         // Left face (-Y)
-        {{0.0f, -1.0f, 0.0f}, {{0.0f, 0.0f, 0.0f}, {lf, 0.0f, 0.0f}, {lf, 0.0f, hf}, {0.0f, 0.0f, hf}}},
+        {{0.0f, -1.0f, 0.0f}, {{dxf, dyf, dzf}, {lf + dxf, dyf, dzf}, {lf + dxf, dyf, hf + dzf}, {dxf, dyf, hf + dzf}}},
         // Top face (+Z)
-        {{0.0f, 0.0f, 1.0f}, {{0.0f, 0.0f, hf}, {lf, 0.0f, hf}, {lf, wf, hf}, {0.0f, wf, hf}}},
+        {{0.0f, 0.0f, 1.0f}, {{dxf, dyf, hf + dzf}, {lf + dxf, dyf, hf + dzf}, {lf + dxf, wf + dyf, hf + dzf}, {dxf, wf + dyf, hf + dzf}}},
         // Bottom face (-Z)
-        {{0.0f, 0.0f, -1.0f}, {{0.0f, 0.0f, 0.0f}, {0.0f, wf, 0.0f}, {lf, wf, 0.0f}, {lf, 0.0f, 0.0f}}}
+        {{0.0f, 0.0f, -1.0f}, {{dxf, dyf, dzf}, {dxf, wf + dyf, dzf}, {lf + dxf, wf + dyf, dzf}, {lf + dxf, dyf, dzf}}}
     };
 
     for (const auto& face : faces) {
         uint32_t startIdx = outMesh.vertices.size();
         for (int i = 0; i < 4; ++i) {
             Vertex v;
-            v.x = face.pos[i][0] + dxf;
-            v.y = face.pos[i][1] + dyf;
-            v.z = face.pos[i][2] + dzf;
+            v.x = face.pos[i][0];
+            v.y = face.pos[i][1];
+            v.z = face.pos[i][2];
             v.nx = face.normal[0];
             v.ny = face.normal[1];
             v.nz = face.normal[2];
             outMesh.vertices.push_back(v);
         }
-        // CCW Indices
         outMesh.indices.push_back(startIdx);
         outMesh.indices.push_back(startIdx + 1);
         outMesh.indices.push_back(startIdx + 2);

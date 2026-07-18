@@ -26,7 +26,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.medinaparra.freecadandroid.nativebridge.FreeCadNative
-import com.medinaparra.freecadandroid.nativebridge.NativeMeshData
+import com.medinaparra.freecadandroid.nativebridge.NativeSceneMesh
+import com.medinaparra.freecadandroid.nativebridge.MacroExecutionResult
 import com.medinaparra.freecadandroid.viewer.CadGLSurfaceView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -683,598 +684,84 @@ fun MainScreen() {
         }
     }
 
-    fun parseAndImportFCStd(fileName: String, xmlContent: String) {
-        val oldDocId = activeDocId
-        if (oldDocId != 0L) {
-            FreeCadNative.closeDocument(oldDocId)
-        }
-        val docId = FreeCadNative.createDocument(fileName)
-        if (docId != 0L) {
-            activeDocId = docId
-            activeDocName = fileName
-        } else {
-            pythonConsoleOutput += ">>> Error: No se pudo crear el documento CAD para $fileName\n"
-            return
-        }
-        
-        objectsList.clear()
-        selectedObjectId = null
-        
-        pythonConsoleOutput += ">>> Cargando archivo FCStd: $fileName...\n"
-        pythonConsoleOutput += ">>> Document.xml extraído correctamente del archivo ZIP.\n"
-        
-        val objectBlocks = xmlContent.split("<Object ")
-        var loadedCount = 0
-        
-        for (i in 1 until objectBlocks.size) {
-            val block = objectBlocks[i]
-            val typeMatch = Regex("""type="([^"]+)"""").find(block)
-            val nameMatch = Regex("""name="([^"]+)"""").find(block)
-            if (typeMatch != null && nameMatch != null) {
-                val type = typeMatch.groupValues[1]
-                val name = nameMatch.groupValues[1]
-                
-                var dim1 = 40f
-                var dim2 = 40f
-                var dim3 = 40f
-                
-                var tx = 0f
-                var ty = 0f
-                var tz = 0f
-                
-                val lenMatch = Regex("""<Property name="Length"[^>]*>\s*<Float value="([0-9.-]+)"""").find(block)
-                if (lenMatch != null) dim1 = lenMatch.groupValues[1].toFloatOrNull() ?: 40f
-                val radMatch = Regex("""<Property name="Radius"[^>]*>\s*<Float value="([0-9.-]+)"""").find(block)
-                if (radMatch != null) dim1 = radMatch.groupValues[1].toFloatOrNull() ?: 20f
-                
-                val widthMatch = Regex("""<Property name="Width"[^>]*>\s*<Float value="([0-9.-]+)"""").find(block)
-                if (widthMatch != null) dim2 = widthMatch.groupValues[1].toFloatOrNull() ?: 40f
-                val cylHeightMatch = Regex("""<Property name="Height"[^>]*>\s*<Float value="([0-9.-]+)"""").find(block)
-                if (cylHeightMatch != null) {
-                    if (type.contains("Cylinder")) {
-                        dim2 = cylHeightMatch.groupValues[1].toFloatOrNull() ?: 50f
-                    } else {
-                        dim3 = cylHeightMatch.groupValues[1].toFloatOrNull() ?: 40f
-                    }
-                }
-                
-                val posXMatch = Regex("""X="([0-9.-]+)"""").find(block)
-                val posYMatch = Regex("""Y="([0-9.-]+)"""").find(block)
-                val posZMatch = Regex("""Z="([0-9.-]+)"""").find(block)
-                
-                if (posXMatch != null) tx = posXMatch.groupValues[1].toFloatOrNull() ?: 0f
-                if (posYMatch != null) ty = posYMatch.groupValues[1].toFloatOrNull() ?: 0f
-                if (posZMatch != null) tz = posZMatch.groupValues[1].toFloatOrNull() ?: 0f
-                
-                if (type.contains("Box")) {
-                    val newId = FreeCadNative.createBox(docId, name, dim1.toDouble(), dim2.toDouble(), dim3.toDouble())
-                    if (newId != 0L) {
-                        if (tx != 0f || ty != 0f || tz != 0f) {
-                            FreeCadNative.translateObject(docId, newId, tx.toDouble(), ty.toDouble(), tz.toDouble())
-                        }
-                        objectsList.add(CadObjectState(newId, name, "BOX", tx = tx, ty = ty, tz = tz, dim1 = dim1, dim2 = dim2, dim3 = dim3))
-                        loadedCount++
-                    }
-                } else if (type.contains("Cylinder")) {
-                    val newId = FreeCadNative.createCylinder(docId, name, dim1.toDouble(), dim2.toDouble())
-                    if (newId != 0L) {
-                        if (tx != 0f || ty != 0f || tz != 0f) {
-                            FreeCadNative.translateObject(docId, newId, tx.toDouble(), ty.toDouble(), tz.toDouble())
-                        }
-                        objectsList.add(CadObjectState(newId, name, "CYLINDER", tx = tx, ty = ty, tz = tz, dim1 = dim1, dim2 = dim2))
-                        loadedCount++
-                    }
-                } else if (type.contains("Sphere")) {
-                    val newId = FreeCadNative.createSphere(docId, name, dim1.toDouble())
-                    if (newId != 0L) {
-                        if (tx != 0f || ty != 0f || tz != 0f) {
-                            FreeCadNative.translateObject(docId, newId, tx.toDouble(), ty.toDouble(), tz.toDouble())
-                        }
-                        objectsList.add(CadObjectState(newId, name, "SPHERE", tx = tx, ty = ty, tz = tz, dim1 = dim1))
-                        loadedCount++
-                    }
-                } else if (type.contains("Cone")) {
-                    val newId = FreeCadNative.createCone(docId, name, dim1.toDouble(), dim2.toDouble(), dim3.toDouble())
-                    if (newId != 0L) {
-                        if (tx != 0f || ty != 0f || tz != 0f) {
-                            FreeCadNative.translateObject(docId, newId, tx.toDouble(), ty.toDouble(), tz.toDouble())
-                        }
-                        objectsList.add(CadObjectState(newId, name, "CONE", tx = tx, ty = ty, tz = tz, dim1 = dim1, dim2 = dim2, dim3 = dim3))
-                        loadedCount++
-                    }
+    fun createCacheFileFromUri(uri: android.net.Uri, suffix: String): java.io.File? {
+        return try {
+            val cacheFile = java.io.File(context.cacheDir, "temp_import_$suffix")
+            if (cacheFile.exists()) {
+                cacheFile.delete()
+            }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                cacheFile.outputStream().use { output ->
+                    input.copyTo(output)
                 }
             }
+            cacheFile
+        } catch (e: Exception) {
+            println("Error copying uri to cache file: ${e.message}")
+            null
         }
-        
-        if (loadedCount == 0) {
-            pythonConsoleOutput += ">>> No se encontraron geometrías primitivas directas en Document.xml. Cargando estructura visual del modelo...\n"
-            val namePrefix = fileName.substringBeforeLast(".")
-            val baseId = FreeCadNative.createBox(docId, "${namePrefix}_Base", 80.0, 80.0, 15.0)
-            if (baseId != 0L) {
-                objectsList.add(CadObjectState(baseId, "${namePrefix}_Base", "BOX", dim1 = 80f, dim2 = 80f, dim3 = 15f))
-            }
-            val rotId = FreeCadNative.createCylinder(docId, "${namePrefix}_Rotor", 30.0, 60.0)
-            if (rotId != 0L) {
-                FreeCadNative.translateObject(docId, rotId, 0.0, 0.0, 15.0)
-                objectsList.add(CadObjectState(rotId, "${namePrefix}_Rotor", "CYLINDER", tx = 0f, ty = 0f, tz = 15f, dim1 = 30f, dim2 = 60f))
-            }
-            loadedCount = 2
-        }
-        
-        if (objectsList.isNotEmpty()) {
-            selectedObjectId = objectsList.first().id
-        }
-        FreeCadNative.recompute(docId)
-        triggerViewportRedraw()
-        pythonConsoleOutput += ">>> Documento FCStd cargado con éxito! Se importaron $loadedCount sólidos CAD.\n"
-        Toast.makeText(context, "Documento FCStd cargado con éxito!", Toast.LENGTH_LONG).show()
     }
 
-    fun parseAndImportStep(fileName: String, content: String) {
+    fun parseAndImportFCStd(fileName: String, filePath: String) {
         val oldDocId = activeDocId
         if (oldDocId != 0L) {
             FreeCadNative.closeDocument(oldDocId)
         }
-        val docId = FreeCadNative.createDocument(fileName)
-        if (docId != 0L) {
-            activeDocId = docId
+        
+        objectsList.clear()
+        selectedObjectId = null
+        pythonConsoleOutput += ">>> Importando archivo BRep/FCStd nativo: $fileName...\n"
+        
+        val result = FreeCadNative.importBrep(fileName, filePath)
+        if (result != null && result.success) {
+            activeDocId = result.documentId
             activeDocName = fileName
+            
+            val objId = 1L
+            objectsList.add(CadObjectState(objId, fileName, "FCSTD_GEOMETRY", dim1 = 0f, dim2 = 0f, dim3 = 0f))
+            selectedObjectId = objId
+            
+            FreeCadNative.recompute(activeDocId)
+            triggerViewportRedraw()
+            pythonConsoleOutput += ">>> ¡Archivo BRep/FCStd cargado con éxito usando OpenCASCADE Technology!\n"
+            pythonConsoleOutput += ">>> Sólidos detectados: ${result.objectCount}, Vértices: ${result.vertexCount}, Triángulos: ${result.triangleCount}\n"
+            Toast.makeText(context, "FCStd/BRep cargado con éxito con OCCT", Toast.LENGTH_LONG).show()
         } else {
-            pythonConsoleOutput += ">>> Error: No se pudo crear el documento CAD para $fileName\n"
-            return
+            val errorMsg = result?.errorMessage ?: FreeCadNative.getLastNativeError() ?: "Error de importación desconocido."
+            pythonConsoleOutput += ">>> ERROR: No se pudo importar el archivo FCStd/BRep.\n>>> Detalle: $errorMsg\n"
+            Toast.makeText(context, "Error: $errorMsg", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun parseAndImportStep(fileName: String, filePath: String) {
+        val oldDocId = activeDocId
+        if (oldDocId != 0L) {
+            FreeCadNative.closeDocument(oldDocId)
         }
         
         objectsList.clear()
         selectedObjectId = null
+        pythonConsoleOutput += ">>> Importando archivo STEP nativo: $fileName...\n"
         
-        pythonConsoleOutput += ">>> Importando archivo STEP: $fileName...\n"
-        
-        val lowerFileName = fileName.lowercase()
-        val lowerContent = content.lowercase()
-        val isPulleyStep = lowerFileName.contains("polea") || lowerFileName.contains("pulley") || lowerFileName.contains("pieza3") ||
-                lowerContent.contains("polea") || lowerContent.contains("pulley") || lowerContent.contains("pieza3") ||
-                lowerContent.contains("tambor") || lowerContent.contains("manto_metalico") || lowerContent.contains("eje_largo_total")
-        
-        if (isPulleyStep) {
-            pythonConsoleOutput += ">>> Firma STEP de polea detectada. Reconstruyendo ensamble multicomponente de alta fidelidad...\n"
+        val result = FreeCadNative.importStep(fileName, filePath)
+        if (result != null && result.success) {
+            activeDocId = result.documentId
+            activeDocName = fileName
             
-            val eje_L = 4369.0
-            val x_centro_tambor = 1931.0
-            val manto_largo = 1981.0
-            val x_manto_izq = x_centro_tambor - manto_largo / 2.0
-            val x_manto_der = x_centro_tambor + manto_largo / 2.0
-            val x_bikon_izq = x_manto_izq - 180.0
-            val x_bikon_der = x_manto_der + 180.0
+            val objId = 1L
+            objectsList.add(CadObjectState(objId, fileName, "STEP_GEOMETRY", dim1 = 0f, dim2 = 0f, dim3 = 0f))
+            selectedObjectId = objId
             
-            val r_manto = 1219.0 / 2.0
-            val r_disco = 1240.0 / 2.0
-            val t_disco = 40.0
-            val r_bikon_ext = 465.0 / 2.0
-            val r_revest = 1269.0 / 2.0
-            
-            val centro_soporte_izq = x_centro_tambor - 2718.0 / 2.0
-            val centro_soporte_der = x_centro_tambor + 2718.0 / 2.0
-            
-            val r_extremos = 320.0 / 2.0
-            val r_bikon = 380.0 / 2.0
-            val r_central = 390.0 / 2.0
-            
-            fun registerStepObj(label: String, type: String, tx_macro: Double, ty_macro: Double, tz_macro: Double, dim1: Double, dim2: Double, dim3: Double = 0.0) {
-                val tx_view = ty_macro
-                val ty_view = tz_macro
-                val tz_view = tx_macro
-                
-                val newId = if (type == "BOX") {
-                    val lf_view = dim2
-                    val wf_view = dim3
-                    val hf_view = dim1
-                    FreeCadNative.createBox(docId, label, lf_view, wf_view, hf_view)
-                } else {
-                    FreeCadNative.createCylinder(docId, label, dim1, dim2)
-                }
-                
-                if (newId != 0L) {
-                    FreeCadNative.translateObject(docId, newId, tx_view, ty_view, tz_view)
-                    objectsList.add(
-                        CadObjectState(
-                            id = newId,
-                            name = label,
-                            type = type,
-                            tx = tx_view.toFloat(),
-                            ty = ty_view.toFloat(),
-                            tz = tz_view.toFloat(),
-                            dim1 = dim1.toFloat(),
-                            dim2 = dim2.toFloat(),
-                            dim3 = dim3.toFloat()
-                        )
-                    )
-                }
-            }
-
-            // Register standard detailed assembly for high fidelity
-            registerStepObj("Eje_Extremo_Izquierdo", "CYLINDER", 0.0, 0.0, 0.0, r_extremos, x_bikon_izq)
-            registerStepObj("Eje_Asiento_BIKON_Izquierdo", "CYLINDER", x_bikon_izq, 0.0, 0.0, r_bikon, x_manto_izq - x_bikon_izq)
-            registerStepObj("Eje_Cuerpo_Central", "CYLINDER", x_manto_izq, 0.0, 0.0, r_central, manto_largo)
-            registerStepObj("Eje_Asiento_BIKON_Derecho", "CYLINDER", x_manto_der, 0.0, 0.0, r_bikon, x_bikon_der - x_manto_der)
-            registerStepObj("Eje_Extremo_Derecho", "CYLINDER", x_bikon_der, 0.0, 0.0, r_extremos, eje_L - x_bikon_der)
-
-            val kw = 63.0
-            val kd = 20.0
-            registerStepObj("Chaveta_Referencia_Izquierda", "BOX", 6.0, -(kw - 1.0) / 2.0, r_extremos - kd + 0.5, 292.0 - 12.0, kw - 1.0, kd)
-            registerStepObj("Chaveta_Referencia_Derecha", "BOX", eje_L - 813.0 + 6.0, -(kw - 1.0) / 2.0, r_extremos - kd + 0.5, 813.0 - 12.0, kw - 1.0, kd)
-
-            registerStepObj("Manto_Metalico", "CYLINDER", x_manto_izq, 0.0, 0.0, r_manto, manto_largo)
-            registerStepObj("Disco_Lateral_Izquierdo", "CYLINDER", x_manto_izq - t_disco / 2.0, 0.0, 0.0, r_disco, t_disco)
-            registerStepObj("Disco_Lateral_Derecho", "CYLINDER", x_manto_der - t_disco / 2.0, 0.0, 0.0, r_disco, t_disco)
-
-            registerStepObj("Cubo_Conico_Izquierdo", "CYLINDER", x_manto_izq - t_disco / 2.0 - 95.0, 0.0, 0.0, 190.0, 95.0)
-            registerStepObj("Cubo_Conico_Derecho", "CYLINDER", x_manto_der + t_disco / 2.0, 0.0, 0.0, 190.0, 95.0)
-
-            registerStepObj("BIKON_2006_Izquierdo", "CYLINDER", x_manto_izq - 48.0, 0.0, 0.0, r_bikon_ext, 36.0)
-            registerStepObj("BIKON_2006_Derecho", "CYLINDER", x_manto_der + 12.0, 0.0, 0.0, r_bikon_ext, 36.0)
-
-            registerStepObj("Base_Revestimiento_SBR", "CYLINDER", x_manto_izq, 0.0, 0.0, r_revest, manto_largo)
-
-            val numPlates = 12
-            val paso_x = manto_largo / (numPlates + 1)
-            val largo_rombo = paso_x * 0.8
-            val ancho_rombo = 60.0
-            val h_placa = 5.0
-            for (i in 1..numPlates) {
-                val px = x_manto_izq + i * paso_x
-                val angle = (i * 2.0 * Math.PI / numPlates)
-                val py = (r_revest * Math.cos(angle))
-                val pz = (r_revest * Math.sin(angle))
-                registerStepObj("Placa_Rombo_$i", "BOX", px, py - ancho_rombo / 2.0, pz, largo_rombo, ancho_rombo, h_placa)
-            }
-
-            val t_sop = 220.0
-            val w_sop = 1040.0
-            val h_sop = 360.0
-            registerStepObj("Soporte_Flotante_SNL_3268", "BOX", centro_soporte_izq - t_sop / 2.0, -w_sop / 2.0, -h_sop, t_sop, w_sop, h_sop * 2.0)
-            registerStepObj("Rodamiento_Flotante_23268", "CYLINDER", centro_soporte_izq - 75.0, 0.0, 0.0, 205.0, 150.0)
-            registerStepObj("Sello_Taconite_Flot_A", "CYLINDER", centro_soporte_izq - t_sop / 2.0 - 48.0, 0.0, 0.0, 222.0, 17.0)
-            registerStepObj("Sello_Taconite_Flot_B", "CYLINDER", centro_soporte_izq + t_sop / 2.0 + 2.0, 0.0, 0.0, 222.0, 17.0)
-
-            registerStepObj("Soporte_Fijo_SNL_3268", "BOX", centro_soporte_der - t_sop / 2.0, -w_sop / 2.0, -h_sop, t_sop, w_sop, h_sop * 2.0)
-            registerStepObj("Rodamiento_Fijo_23268", "CYLINDER", centro_soporte_der - 75.0, 0.0, 0.0, 205.0, 150.0)
-            registerStepObj("Sello_Taconite_Fijo_A", "CYLINDER", centro_soporte_der - t_sop / 2.0 - 48.0, 0.0, 0.0, 222.0, 17.0)
-            registerStepObj("Sello_Taconite_Fijo_B", "CYLINDER", centro_soporte_der + t_sop / 2.0 + 2.0, 0.0, 0.0, 222.0, 17.0)
-
-            val d_acop = 565.0
-            val l_acop = 240.0
-            registerStepObj("Cubo_Acoplamiento_Izquierdo", "CYLINDER", 0.0, 0.0, 0.0, 205.0, l_acop)
-            registerStepObj("Corona_Acoplamiento_Izquierda", "CYLINDER", 0.0, 0.0, 0.0, d_acop / 2.0, 82.0)
-            registerStepObj("Cubo_Acoplamiento_Derecho", "CYLINDER", eje_L - l_acop, 0.0, 0.0, 205.0, l_acop)
-            registerStepObj("Corona_Acoplamiento_Derecha", "CYLINDER", eje_L - 82.0, 0.0, 0.0, d_acop / 2.0, 82.0)
-
-            val t_bs = 160.0
-            val w_bs = 880.0
-            val h_bs = 820.0
-            val x_bs = centro_soporte_izq - t_sop / 2.0 - t_bs - 8.0
-            registerStepObj("Backstop_FALK_1165_NRTA", "BOX", x_bs, -w_bs / 2.0, -h_bs / 2.0, t_bs, w_bs, h_bs)
-            registerStepObj("Tapa_Backstop_SNL", "CYLINDER", x_bs - 35.0, 0.0, 0.0, 295.0, 42.0)
-
-            selectedObjectId = objectsList.firstOrNull()?.id
-            FreeCadNative.recompute(docId)
+            FreeCadNative.recompute(activeDocId)
             triggerViewportRedraw()
-            Toast.makeText(context, "Archivo STEP de la polea importado con éxito!", Toast.LENGTH_LONG).show()
-            return
+            pythonConsoleOutput += ">>> ¡Archivo STEP cargado con éxito usando OpenCASCADE Technology!\n"
+            pythonConsoleOutput += ">>> Sólidos detectados: ${result.objectCount}, Vértices: ${result.vertexCount}, Triángulos: ${result.triangleCount}\n"
+            Toast.makeText(context, "STEP cargado con éxito con OCCT", Toast.LENGTH_LONG).show()
+        } else {
+            val errorMsg = result?.errorMessage ?: FreeCadNative.getLastNativeError() ?: "Error de importación desconocido."
+            pythonConsoleOutput += ">>> ERROR: No se pudo importar el archivo STEP.\n>>> Detalle: $errorMsg\n"
+            Toast.makeText(context, "Error: $errorMsg", Toast.LENGTH_LONG).show()
         }
-
-        // --- GENERAL ISO-10303 STATEMENT TOKENIZER ---
-        val statements = content.split(";").map { it.trim() }.filter { it.isNotEmpty() }
-        
-        val stepPoints = mutableMapOf<String, Triple<Double, Double, Double>>()
-        val stepPlacements = mutableMapOf<String, String>() // placementId -> pointId
-        val stepEntities = mutableMapOf<String, Pair<String, String>>()
-
-        for (stmt in statements) {
-            val stmtMatch = Regex("""#(\d+)\s*=\s*([A-Za-z0-9_]+)\s*\((.*)\)""", RegexOption.DOT_MATCHES_ALL).find(stmt)
-            if (stmtMatch != null) {
-                val id = "#" + stmtMatch.groupValues[1]
-                val entityName = stmtMatch.groupValues[2].uppercase()
-                val rawArgs = stmtMatch.groupValues[3].trim()
-                
-                stepEntities[id] = Pair(entityName, rawArgs)
-                
-                if (entityName == "CARTESIAN_POINT") {
-                    val coordsMatch = Regex("""\(\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*,\s*([0-9.eE+-]+)\s*\)""").find(rawArgs)
-                    if (coordsMatch != null) {
-                        val x = coordsMatch.groupValues[1].toDoubleOrNull() ?: 0.0
-                        val y = coordsMatch.groupValues[2].toDoubleOrNull() ?: 0.0
-                        val z = coordsMatch.groupValues[3].toDoubleOrNull() ?: 0.0
-                        stepPoints[id] = Triple(x, y, z)
-                    }
-                } else if (entityName == "AXIS2_PLACEMENT_3D") {
-                    val firstRefMatch = Regex("""#(\d+)""").find(rawArgs)
-                    if (firstRefMatch != null) {
-                        stepPlacements[id] = "#" + firstRefMatch.groupValues[1]
-                    }
-                }
-            }
-        }
-
-        var foundPrimitives = false
-        var stepCylCount = 0
-        var stepSphCount = 0
-        var stepConeCount = 0
-        var stepBoxCount = 0
-
-        for ((id, pair) in stepEntities) {
-            val entityName = pair.first
-            val rawArgs = pair.second
-            
-            val refs = Regex("""#(\d+)""").findAll(rawArgs).map { "#" + it.groupValues[1] }.toList()
-            val numbers = Regex("""\b[0-9.eE+-]+\b""").findAll(rawArgs).mapNotNull { it.value.toDoubleOrNull() }.toList()
-
-            when (entityName) {
-                "CYLINDER", "CYLINDRICAL_SURFACE" -> {
-                    val placementId = refs.firstOrNull() ?: ""
-                    val radius = numbers.firstOrNull() ?: 15.0
-                    val height = if (numbers.size >= 2) numbers[1] else 50.0
-                    
-                    val pointId = stepPlacements[placementId]
-                    val point = stepPoints[pointId] ?: Triple(0.0, 0.0, 0.0)
-                    
-                    val name = "Cilindro_STEP_${++stepCylCount}"
-                    val newId = FreeCadNative.createCylinder(docId, name, radius, height)
-                    if (newId != 0L) {
-                        FreeCadNative.translateObject(docId, newId, point.second, point.third, point.first)
-                        objectsList.add(CadObjectState(
-                            id = newId, name = name, type = "CYLINDER",
-                            dim1 = radius.toFloat(), dim2 = height.toFloat(),
-                            tx = point.second.toFloat(), ty = point.third.toFloat(), tz = point.first.toFloat()
-                        ))
-                        foundPrimitives = true
-                    }
-                }
-                "SPHERE", "SPHERICAL_SURFACE" -> {
-                    val placementId = refs.firstOrNull() ?: ""
-                    val radius = numbers.firstOrNull() ?: 20.0
-                    
-                    val pointId = stepPlacements[placementId]
-                    val point = stepPoints[pointId] ?: Triple(0.0, 0.0, 0.0)
-                    
-                    val name = "Esfera_STEP_${++stepSphCount}"
-                    val newId = FreeCadNative.createSphere(docId, name, radius)
-                    if (newId != 0L) {
-                        FreeCadNative.translateObject(docId, newId, point.second, point.third, point.first)
-                        objectsList.add(CadObjectState(
-                            id = newId, name = name, type = "SPHERE",
-                            dim1 = radius.toFloat(),
-                            tx = point.second.toFloat(), ty = point.third.toFloat(), tz = point.first.toFloat()
-                        ))
-                        foundPrimitives = true
-                    }
-                }
-                "CONE", "CONICAL_SURFACE" -> {
-                    val placementId = refs.firstOrNull() ?: ""
-                    val radius1 = if (numbers.isNotEmpty()) numbers[0] else 20.0
-                    val radius2 = if (numbers.size >= 2) numbers[1] else 5.0
-                    val height = if (numbers.size >= 3) numbers[2] else 40.0
-                    
-                    val pointId = stepPlacements[placementId]
-                    val point = stepPoints[pointId] ?: Triple(0.0, 0.0, 0.0)
-                    
-                    val name = "Cono_STEP_${++stepConeCount}"
-                    val newId = FreeCadNative.createCone(docId, name, radius1, radius2, height)
-                    if (newId != 0L) {
-                        FreeCadNative.translateObject(docId, newId, point.second, point.third, point.first)
-                        objectsList.add(CadObjectState(
-                            id = newId, name = name, type = "CONE",
-                            dim1 = radius1.toFloat(), dim2 = radius2.toFloat(), dim3 = height.toFloat(),
-                            tx = point.second.toFloat(), ty = point.third.toFloat(), tz = point.first.toFloat()
-                        ))
-                        foundPrimitives = true
-                    }
-                }
-                "BOX", "BLOCK" -> {
-                    val placementId = refs.firstOrNull() ?: ""
-                    val len = if (numbers.isNotEmpty()) numbers[0] else 30.0
-                    val wid = if (numbers.size >= 2) numbers[1] else 30.0
-                    val hei = if (numbers.size >= 3) numbers[2] else 30.0
-                    
-                    val pointId = stepPlacements[placementId]
-                    val point = stepPoints[pointId] ?: Triple(0.0, 0.0, 0.0)
-                    
-                    val name = "Bloque_STEP_${++stepBoxCount}"
-                    val newId = FreeCadNative.createBox(docId, name, len, wid, hei)
-                    if (newId != 0L) {
-                        FreeCadNative.translateObject(docId, newId, point.second, point.third, point.first)
-                        objectsList.add(CadObjectState(
-                            id = newId, name = name, type = "BOX",
-                            dim1 = len.toFloat(), dim2 = wid.toFloat(), dim3 = hei.toFloat(),
-                            tx = point.second.toFloat(), ty = point.third.toFloat(), tz = point.first.toFloat()
-                        ))
-                        foundPrimitives = true
-                    }
-                }
-            }
-        }
-
-        // --- FALLBACK RECONSTRUCTION USING FULL BREP POINT CLOUD ANALYSIS ---
-        if (!foundPrimitives) {
-            val hasStepSignature = content.contains("ISO-10303-21") || content.contains("HEADER;") || content.contains("MANIFOLD_SOLID_BREP") || content.contains("CLOSED_SHELL")
-            if (hasStepSignature) {
-                pythonConsoleOutput += ">>> Firma STEP detectada (ISO-10303). Analizando nube de puntos CARTESIAN_POINT...\n"
-                
-                var minX = Double.MAX_VALUE
-                var maxX = -Double.MAX_VALUE
-                var minY = Double.MAX_VALUE
-                var maxY = -Double.MAX_VALUE
-                var minZ = Double.MAX_VALUE
-                var maxZ = -Double.MAX_VALUE
-                var pointCount = 0
-                
-                for (point in stepPoints.values) {
-                    val x = point.first
-                    val y = point.second
-                    val z = point.third
-                    if (x < minX) minX = x
-                    if (x > maxX) maxX = x
-                    if (y < minY) minY = y
-                    if (y > maxY) maxY = y
-                    if (z < minZ) minZ = z
-                    if (z > maxZ) maxZ = z
-                    pointCount++
-                }
-                
-                if (pointCount > 0 && maxX > minX && maxY > minY && maxZ > minZ) {
-                    val length = (maxX - minX)
-                    val width = (maxY - minY)
-                    val height = (maxZ - minZ)
-                    
-                    val rLength = Math.round(length * 100.0) / 100.0
-                    val rWidth = Math.round(width * 100.0) / 100.0
-                    val rHeight = Math.round(height * 100.0) / 100.0
-                    
-                    pythonConsoleOutput += ">>> Dimensiones analizadas: L:$rLength x W:$rWidth x H:$rHeight mm (de $pointCount puntos)\n"
-                    
-                    val planesCount = content.split("PLANE").size - 1
-                    val cylindricalCount = content.split("CYLINDRICAL_SURFACE").size - 1
-                    val conicalCount = content.split("CONICAL_SURFACE").size - 1
-                    val circlesCount = content.split("CIRCLE").size - 1
-                    
-                    val hasCylinderSignatures = cylindricalCount > 0 || circlesCount > 0 || conicalCount > 0
-                    
-                    pythonConsoleOutput += ">>> Análisis topológico: $planesCount planos, $cylindricalCount sup. cilíndricas, $circlesCount círculos.\n"
-                    
-                    val numSlices = 15
-                    val majorAxis = if (length >= width && length >= height) 0 else if (width >= length && width >= height) 1 else 2
-                    
-                    val minMajor = if (majorAxis == 0) minX else if (majorAxis == 1) minY else minZ
-                    val maxMajor = if (majorAxis == 0) maxX else if (majorAxis == 1) maxY else maxZ
-                    val lenMajor = maxMajor - minMajor
-                    val sliceMajorLength = lenMajor / numSlices
-                    
-                    pythonConsoleOutput += ">>> Realizando análisis de rebanadas volumétricas ($numSlices divisiones) sobre eje mayor ${if (majorAxis == 0) "X" else if (majorAxis == 1) "Y" else "Z"}...\n"
-                    
-                    class SliceData(
-                        val index: Int,
-                        val centerMajor: Double,
-                        var minA: Double = Double.MAX_VALUE,
-                        var maxA: Double = -Double.MAX_VALUE,
-                        var minB: Double = Double.MAX_VALUE,
-                        var maxB: Double = -Double.MAX_VALUE,
-                        var count: Int = 0
-                    )
-                    
-                    val slices = Array(numSlices) { i ->
-                        SliceData(i, minMajor + (i + 0.5) * sliceMajorLength)
-                    }
-                    
-                    for (point in stepPoints.values) {
-                        val x = point.first
-                        val y = point.second
-                        val z = point.third
-                        
-                        val valMajor = if (majorAxis == 0) x else if (majorAxis == 1) y else z
-                        val valA = if (majorAxis == 0) y else if (majorAxis == 1) x else x
-                        val valB = if (majorAxis == 0) z else if (majorAxis == 1) z else y
-                        
-                        val sliceIdx = ((valMajor - minMajor) / sliceMajorLength).toInt().coerceIn(0, numSlices - 1)
-                        val s = slices[sliceIdx]
-                        if (valA < s.minA) s.minA = valA
-                        if (valA > s.maxA) s.maxA = valA
-                        if (valB < s.minB) s.minB = valB
-                        if (valB > s.maxB) s.maxB = valB
-                        s.count++
-                    }
-                    
-                    for (i in 0 until numSlices) {
-                        val s = slices[i]
-                        if (s.count < 3) {
-                            var left: SliceData? = null
-                            var right: SliceData? = null
-                            for (j in i - 1 downTo 0) {
-                                if (slices[j].count >= 3) { left = slices[j]; break }
-                            }
-                            for (j in i + 1 until numSlices) {
-                                if (slices[j].count >= 3) { right = slices[j]; break }
-                            }
-                            if (left != null && right != null) {
-                                s.minA = (left.minA + right.minA) / 2
-                                s.maxA = (left.maxA + right.maxA) / 2
-                                s.minB = (left.minB + right.minB) / 2
-                                s.maxB = (left.maxB + right.maxB) / 2
-                            } else if (left != null) {
-                                s.minA = left.minA; s.maxA = left.maxA; s.minB = left.minB; s.maxB = left.maxB
-                            } else if (right != null) {
-                                s.minA = right.minA; s.maxA = right.maxA; s.minB = right.minB; s.maxB = right.maxB
-                            } else {
-                                val defaultA = if (majorAxis == 0) width else if (majorAxis == 1) length else length
-                                val defaultB = if (majorAxis == 0) height else if (majorAxis == 1) height else width
-                                s.minA = -defaultA / 2; s.maxA = defaultA / 2
-                                s.minB = -defaultB / 2; s.maxB = defaultB / 2
-                            }
-                        }
-                    }
-                    
-                    for (i in 0 until numSlices) {
-                        val s = slices[i]
-                        val dimA = s.maxA - s.minA
-                        val dimB = s.maxB - s.minB
-                        if (dimA <= 0.1 || dimB <= 0.1) continue
-                        
-                        val centerA = (s.minA + s.maxA) / 2
-                        val centerB = (s.minB + s.maxB) / 2
-                        
-                        val tx_macro = if (majorAxis == 0) s.centerMajor else centerA
-                        val ty_macro = if (majorAxis == 0) centerA else (if (majorAxis == 1) s.centerMajor else centerA)
-                        val tz_macro = if (majorAxis == 0) centerB else (if (majorAxis == 1) centerB else s.centerMajor)
-                        
-                        val tx_view = ty_macro
-                        val ty_view = tz_macro
-                        val tz_view = tx_macro
-                        
-                        val ratio = if (dimA > dimB) dimB / dimA else dimA / dimB
-                        val isCyl = ratio >= 0.7 && (hasCylinderSignatures || cylindricalCount > 0 || circlesCount > 0)
-                        
-                        val label = if (isCyl) "Sección_Cilíndrica_${i + 1}" else "Sección_Prismática_${i + 1}"
-                        
-                        val newId = if (isCyl) {
-                            val radius = (dimA + dimB) / 4.0
-                            FreeCadNative.createCylinder(docId, label, radius, sliceMajorLength)
-                        } else {
-                            FreeCadNative.createBox(docId, label, dimA, dimB, sliceMajorLength)
-                        }
-                        
-                        if (newId != 0L) {
-                            FreeCadNative.translateObject(docId, newId, tx_view, ty_view, tz_view)
-                            objectsList.add(
-                                CadObjectState(
-                                    id = newId,
-                                    name = label,
-                                    type = if (isCyl) "CYLINDER" else "BOX",
-                                    tx = tx_view.toFloat(),
-                                    ty = ty_view.toFloat(),
-                                    tz = tz_view.toFloat(),
-                                    dim1 = if (isCyl) ((dimA + dimB) / 4f).toFloat() else dimA.toFloat(),
-                                    dim2 = if (isCyl) sliceMajorLength.toFloat() else dimB.toFloat(),
-                                    dim3 = if (isCyl) 0f else sliceMajorLength.toFloat()
-                                )
-                            )
-                        }
-                    }
-                    pythonConsoleOutput += ">>> Objeto STEP de polea/pieza reconstruido dinámicamente: $numSlices componentes alineados.\n"
-                    foundPrimitives = true
-                }
-            } else {
-                pythonConsoleOutput += ">>> Formato ISO-10303 no estandarizado. Generando volumen cúbico de referencia STEP...\n"
-                val genId = FreeCadNative.createBox(docId, "Sólido_STEP_Referencia", 45.0, 45.0, 45.0)
-                if (genId != 0L) {
-                    objectsList.add(CadObjectState(genId, "Sólido_STEP_Referencia", "BOX", dim1 = 45f, dim2 = 45f, dim3 = 45f))
-                }
-            }
-        }
-        
-        if (objectsList.isNotEmpty()) {
-            selectedObjectId = objectsList.first().id
-        }
-        FreeCadNative.recompute(docId)
-        triggerViewportRedraw()
-        Toast.makeText(context, "Archivo STEP importado con éxito!", Toast.LENGTH_LONG).show()
     }
 
     // Initialize document at launch
@@ -1308,37 +795,40 @@ fun MainScreen() {
                 
                 val lowerName = fileName.lowercase()
                 if (lowerName.endsWith(".fcstd") || lowerName.endsWith(".fcstd1")) {
+                    var shapeFile: java.io.File? = null
                     context.contentResolver.openInputStream(it)?.use { rawInputStream ->
                         val zipInputStream = java.util.zip.ZipInputStream(rawInputStream)
                         var entry = zipInputStream.nextEntry
-                        var documentXmlContent: String? = null
                         while (entry != null) {
-                            if (entry.name == "Document.xml") {
-                                val bos = java.io.ByteArrayOutputStream()
-                                val buffer = ByteArray(4096)
-                                var len = zipInputStream.read(buffer)
-                                while (len > 0) {
-                                    bos.write(buffer, 0, len)
-                                    len = zipInputStream.read(buffer)
+                            if (entry.name.endsWith(".brp") || entry.name.endsWith(".brep")) {
+                                shapeFile = java.io.File(context.cacheDir, "temp_extracted_shape.brp")
+                                if (shapeFile!!.exists()) shapeFile!!.delete()
+                                shapeFile!!.outputStream().use { output ->
+                                    zipInputStream.copyTo(output)
                                 }
-                                documentXmlContent = bos.toString("UTF-8")
                                 break
                             }
                             zipInputStream.closeEntry()
                             entry = zipInputStream.nextEntry
                         }
-                        
-                        if (documentXmlContent != null) {
-                            parseAndImportFCStd(fileName, documentXmlContent)
+                    }
+                    if (shapeFile != null && shapeFile!!.exists()) {
+                        parseAndImportFCStd(fileName, shapeFile!!.absolutePath)
+                    } else {
+                        pythonConsoleOutput += ">>> No se encontró geometría BRep (.brp) en el archivo FCStd. Intentando cargar estructura...\n"
+                        val fallbackFile = createCacheFileFromUri(it, "model.fcstd")
+                        if (fallbackFile != null) {
+                            parseAndImportFCStd(fileName, fallbackFile.absolutePath)
                         } else {
-                            pythonConsoleOutput += ">>> Error: No se encontró Document.xml dentro de $fileName\n"
-                            Toast.makeText(context, "El archivo FCStd no tiene Document.xml", Toast.LENGTH_SHORT).show()
+                            pythonConsoleOutput += ">>> Error: No se pudo preparar el archivo FCStd.\n"
                         }
                     }
                 } else if (lowerName.endsWith(".step") || lowerName.endsWith(".stp")) {
-                    context.contentResolver.openInputStream(it)?.use { inputStream ->
-                        val content = inputStream.bufferedReader().use { reader -> reader.readText() }
-                        parseAndImportStep(fileName, content)
+                    val cacheFile = createCacheFileFromUri(it, "model.step")
+                    if (cacheFile != null) {
+                        parseAndImportStep(fileName, cacheFile.absolutePath)
+                    } else {
+                        pythonConsoleOutput += ">>> Error: No se pudo preparar el archivo STEP en caché local.\n"
                     }
                 } else if (lowerName.endsWith(".fcmacro") || lowerName.endsWith(".py")) {
                     context.contentResolver.openInputStream(it)?.use { inputStream ->
@@ -1348,12 +838,14 @@ fun MainScreen() {
                         Toast.makeText(context, "Macro cargada con éxito!", Toast.LENGTH_SHORT).show()
                     }
                 } else {
-                    context.contentResolver.openInputStream(it)?.use { inputStream ->
-                        val content = inputStream.bufferedReader().use { reader -> reader.readText() }
-                        if (content.contains("ISO-10303-21") || content.contains("HEADER;")) {
-                            parseAndImportStep(fileName, content)
+                    val cacheFile = createCacheFileFromUri(it, "model_generic")
+                    if (cacheFile != null) {
+                        val text = try { cacheFile.readText() } catch (e: Exception) { "" }
+                        val isStep = text.contains("ISO-10303-21") || text.contains("HEADER;")
+                        if (isStep) {
+                            parseAndImportStep(fileName, cacheFile.absolutePath)
                         } else {
-                            macroInputCode = content
+                            macroInputCode = text
                             pythonConsoleOutput += ">>> Archivo de texto cargado como macro.\n"
                         }
                     }

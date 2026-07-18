@@ -5,7 +5,7 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.util.Log
 import com.medinaparra.freecadandroid.nativebridge.FreeCadNative
-import com.medinaparra.freecadandroid.nativebridge.NativeMeshData
+import com.medinaparra.freecadandroid.nativebridge.NativeSceneMesh
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -49,6 +49,20 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
     @Volatile
     private var meshNeedsUpdate = false
 
+    // Bounding Box and dynamic centering state (preserving original coordinates)
+    private var modelMinX = -20f
+    private var modelMinY = -20f
+    private var modelMinZ = -20f
+    private var modelMaxX = 20f
+    private var modelMaxY = 20f
+    private var modelMaxZ = 20f
+
+    private var modelCenterX = 0f
+    private var modelCenterY = 0f
+    private var modelCenterZ = 0f
+    private var modelSize = 40f
+    private var aspect = 1.0f
+
     fun setActiveDocument(documentId: Long) {
         activeDocumentId = documentId
         meshNeedsUpdate = true
@@ -56,6 +70,15 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
     fun requestMeshUpdate() {
         meshNeedsUpdate = true
+    }
+
+    // Centering and zoom visual fitting (fitAll)
+    fun fitAll() {
+        cameraController.panX = 0f
+        cameraController.panY = 0f
+        cameraController.distance = (modelSize * 1.5f).coerceIn(10f, 5000f)
+        cameraController.angleX = -45f
+        cameraController.angleY = 45f
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -80,9 +103,7 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES30.glViewport(0, 0, width, height)
-        val ratio = width.toFloat() / height.toFloat()
-        // Orthographic or Perspective. Let's do a beautiful 3D perspective projection
-        Matrix.perspectiveM(projectionMatrix, 0, 45.0f, ratio, 0.1f, 2000.0f)
+        aspect = width.toFloat() / height.toFloat()
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -90,7 +111,12 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
         if (shaderProgram == 0) return
 
-        // 1. Calculate camera transform matrices
+        // 1. Setup dynamic clipping planes proportional to model size to prevent z-fighting or geometric clipping
+        val nearPlane = (cameraController.distance - modelSize * 1.2f).coerceAtLeast(0.1f)
+        val farPlane = (cameraController.distance + modelSize * 2.5f).coerceAtLeast(100f)
+        Matrix.perspectiveM(projectionMatrix, 0, 45.0f, aspect, nearPlane, farPlane)
+
+        // 2. Calculate camera transform matrices
         Matrix.setIdentityM(viewMatrix, 0)
         // Translate view based on distance and pan
         Matrix.translateM(viewMatrix, 0, cameraController.panX, cameraController.panY, -cameraController.distance)
@@ -100,18 +126,18 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
         GLES30.glUseProgram(shaderProgram)
 
-        // 2. Query and upload CAD Mesh if updated
+        // 3. Query and upload CAD Mesh if updated
         if (meshNeedsUpdate && activeDocumentId != 0L) {
             uploadCadMesh()
             meshNeedsUpdate = false
         }
 
-        // 3. Draw Grid and Reference Axes (with flat shading)
+        // 4. Draw Grid and Reference Axes (with flat shading)
         GLES30.glUniform1i(flatShadingLoc, 1) // Enable flat shading
         drawGrid()
         drawAxes()
 
-        // 4. Draw CAD Geometries (with Phong shading)
+        // 5. Draw CAD Geometries (with Phong shading)
         if (meshIndexCount > 0) {
             GLES30.glUniform1i(flatShadingLoc, 0) // Enable Phong lighting
             drawCadMesh()
@@ -120,13 +146,32 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
     private fun uploadCadMesh() {
         try {
-            val meshData: NativeMeshData? = FreeCadNative.getSceneMesh(activeDocumentId)
+            val meshData: NativeSceneMesh? = FreeCadNative.getSceneMesh(activeDocumentId)
             if (meshData != null && meshData.vertexCount > 0 && meshData.indexCount > 0) {
                 meshIndexCount = meshData.indexCount
-                meshColor[0] = meshData.colorR
-                meshColor[1] = meshData.colorG
-                meshColor[2] = meshData.colorB
-                meshColor[3] = meshData.colorA
+                
+                // Track absolute bounding box bounds to compute dynamic centering matrix offsets and near/far plane depth
+                modelMinX = meshData.minX
+                modelMinY = meshData.minY
+                modelMinZ = meshData.minZ
+                modelMaxX = meshData.maxX
+                modelMaxY = meshData.maxY
+                modelMaxZ = meshData.maxZ
+
+                modelCenterX = (modelMinX + modelMaxX) / 2f
+                modelCenterY = (modelMinY + modelMaxY) / 2f
+                modelCenterZ = (modelMinZ + modelMaxZ) / 2f
+
+                val dx = modelMaxX - modelMinX
+                val dy = modelMaxY - modelMinY
+                val dz = modelMaxZ - modelMinZ
+                modelSize = kotlin.math.sqrt((dx*dx + dy*dy + dz*dz).toDouble()).toFloat().coerceAtLeast(1f)
+
+                // Color defaults to high-fidelity slate/teal blue
+                meshColor[0] = 0.2f
+                meshColor[1] = 0.6f
+                meshColor[2] = 0.8f
+                meshColor[3] = 1.0f
 
                 // Upload Vertex Buffer
                 if (meshVbo == 0) {
@@ -152,6 +197,9 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
                 GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
                 GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
+
+                // Automatically trigger fitAll to view the model centered on first import
+                fitAll()
             } else {
                 meshIndexCount = 0
             }
@@ -163,7 +211,10 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
     private fun drawCadMesh() {
         if (meshVbo == 0 || meshIbo == 0) return
 
+        // Dynamic visual centering using model-matrix translation while keeping underlying coordinates clean and original!
         Matrix.setIdentityM(modelMatrix, 0)
+        Matrix.translateM(modelMatrix, 0, -modelCenterX, -modelCenterY, -modelCenterZ)
+        
         Matrix.multiplyMM(mvMatrix, 0, viewMatrix, 0, modelMatrix, 0)
         Matrix.multiplyMM(mvpMatrix, 0, projectionMatrix, 0, mvMatrix, 0)
 
@@ -227,7 +278,6 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
         GLES30.glBufferData(GLES30.GL_ARRAY_BUFFER, gridLines.size * 4, gridFloatBuf, GLES30.GL_STATIC_DRAW)
 
         // Build Cartesian Coordinate Axes: X (Red), Y (Green), Z (Blue)
-        // Starts at origin, extends along axis directions
         val axisLen = 150f
         val axesData = floatArrayOf(
             // X-axis (Red)
@@ -264,7 +314,6 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
 
         GLES30.glUniformMatrix4fv(mvMatrixLoc, 1, false, mvMatrix, 0)
         GLES30.glUniformMatrix4fv(mvpMatrixLoc, 1, false, mvpMatrix, 0)
-        // Sleek grid lines in low contrast gray
         GLES30.glUniform4f(colorLoc, 0.4f, 0.45f, 0.5f, 0.35f)
 
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, gridVbo)
@@ -291,7 +340,6 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
         GLES30.glEnableVertexAttribArray(0)
         GLES30.glVertexAttribPointer(0, 3, GLES30.GL_FLOAT, false, 6 * 4, 0)
 
-        // Ensure lines are visible on top of other elements with high contrast
         GLES30.glLineWidth(3.0f)
 
         // Draw X-axis (Red)
@@ -362,7 +410,6 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
         void main() {
             gl_Position = uMVPMatrix * vec4(aPosition, 1.0);
             vPosition = vec3(uMVMatrix * vec4(aPosition, 1.0));
-            // Transform normal to eye space
             vNormal = vec3(uMVMatrix * vec4(aNormal, 0.0));
         }
     """.trimIndent()
@@ -384,14 +431,11 @@ class CadRenderer(val cameraController: CameraController) : GLSurfaceView.Render
                 fragColor = uColor;
             } else {
                 vec3 normal = normalize(vNormal);
-                // Simple directional light in eye space
                 vec3 lightDir = normalize(vec3(80.0, 80.0, 150.0) - vPosition);
                 
-                // Phong lighting variables
                 float ambient = 0.35;
                 float diffuse = max(dot(normal, lightDir), 0.0) * 0.65;
                 
-                // Specular highlight
                 vec3 viewDir = normalize(-vPosition);
                 vec3 halfDir = normalize(lightDir + viewDir);
                 float specular = pow(max(dot(normal, halfDir), 0.0), 32.0) * 0.35;
