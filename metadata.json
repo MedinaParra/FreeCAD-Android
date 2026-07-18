@@ -1,0 +1,6 @@
+{
+  "name": "FreeCAD Android Native",
+  "description": "Prototipo nativo de FreeCAD para Android con núcleo C++ y JNI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
