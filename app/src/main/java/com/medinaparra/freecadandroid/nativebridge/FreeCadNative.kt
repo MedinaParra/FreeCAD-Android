@@ -222,6 +222,35 @@ object FreeCadNative {
         }
     }
 
+    fun getNativeCapabilities(): NativeCapabilities {
+        if (!isLibraryLoaded) {
+            return NativeCapabilities(
+                nativeLibraryLoaded = false,
+                occtAvailable = false,
+                freeCadBaseAvailable = false,
+                freeCadAppAvailable = false,
+                partModuleAvailable = false,
+                pythonAvailable = false,
+                stepImportAvailable = false,
+                fcStdImportAvailable = false
+            )
+        }
+        return try {
+            nativeGetNativeCapabilities()
+        } catch (e: UnsatisfiedLinkError) {
+            NativeCapabilities(
+                nativeLibraryLoaded = true,
+                occtAvailable = false,
+                freeCadBaseAvailable = false,
+                freeCadAppAvailable = false,
+                partModuleAvailable = false,
+                pythonAvailable = false,
+                stepImportAvailable = false,
+                fcStdImportAvailable = false
+            )
+        }
+    }
+
     // Native JNI mappings
     @JvmStatic private external fun nativeInitialize(nativePath: String): Boolean
     @JvmStatic private external fun nativeShutdown()
@@ -241,4 +270,5 @@ object FreeCadNative {
     @JvmStatic private external fun nativeGetSceneMesh(documentId: Long): NativeSceneMesh?
     @JvmStatic private external fun nativeExecutePythonMacro(documentId: Long, code: String, timeoutMs: Long): MacroExecutionResult?
     @JvmStatic private external fun nativeGetLastNativeError(): String?
+    @JvmStatic private external fun nativeGetNativeCapabilities(): NativeCapabilities
 }

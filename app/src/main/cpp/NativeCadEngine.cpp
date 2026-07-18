@@ -20,6 +20,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Compound.hxx>
 #include <Poly_Triangulation.hxx>
 #include <BRep_Tool.hxx>
 #include <TColgp_Array1OfPnt.hxx>
@@ -314,17 +315,44 @@ bool CadDocument::loadStep(const std::string& filePath) {
 
 bool CadDocument::loadBrep(const std::string& filePath) {
 #ifdef USE_OCCT
-    LOGI("loadBrep: Reading BRep/FCStd file: %s", filePath.c_str());
-    TopoDS_Shape shape;
+    LOGI("loadBrep: Reading BRep/FCStd files: %s", filePath.c_str());
+    
+    std::vector<std::string> paths;
+    size_t start = 0;
+    size_t end = filePath.find(';');
+    while (end != std::string::npos) {
+        paths.push_back(filePath.substr(start, end - start));
+        start = end + 1;
+        end = filePath.find(';', start);
+    }
+    paths.push_back(filePath.substr(start));
+
     BRep_Builder builder;
-    Standard_Boolean result = BRepTools::Read(shape, filePath.c_str(), builder);
-    if (!result || shape.IsNull()) {
-        LOGE("loadBrep: BRepTools::Read failed or shape is null.");
+    TopoDS_Compound compound;
+    builder.MakeCompound(compound);
+    bool anyLoaded = false;
+
+    for (const auto& path : paths) {
+        if (path.empty()) continue;
+        TopoDS_Shape shape;
+        Standard_Boolean result = BRepTools::Read(shape, path.c_str(), builder);
+        if (result && !shape.IsNull()) {
+            builder.Add(compound, shape);
+            anyLoaded = true;
+            LOGI("loadBrep: Successfully loaded solid shape from: %s", path.c_str());
+        } else {
+            LOGE("loadBrep: Failed to read shape from: %s", path.c_str());
+        }
+    }
+
+    if (!anyLoaded) {
+        LOGE("loadBrep: No shapes could be loaded.");
         return false;
     }
-    importedShape = shape;
+
+    importedShape = compound;
     hasImportedShape = true;
-    LOGI("loadBrep: Successfully loaded solid shape from BRep.");
+    LOGI("loadBrep: Successfully loaded compound solid shapes from BRep.");
     return true;
 #else
     LOGE("loadBrep: OpenCASCADE is NOT compiled in this build! Cannot import BRep file natively.");

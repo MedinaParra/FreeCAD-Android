@@ -460,4 +460,35 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeGetLastNati
     return env->NewStringUTF(err.c_str());
 }
 
+JNIEXPORT jobject JNICALL
+Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeGetNativeCapabilities(
+        JNIEnv* env, jobject thiz) {
+    jclass cls = env->FindClass("com/medinaparra/freecadandroid/nativebridge/NativeCapabilities");
+    if (!cls) {
+        LOGE("Failed to find NativeCapabilities class");
+        return nullptr;
+    }
+    jmethodID constr = env->GetMethodID(cls, "<init>", "(ZZZZZZZZ)V");
+    if (!constr) {
+        LOGE("Failed to find NativeCapabilities constructor");
+        return nullptr;
+    }
+
+    jboolean loaded = JNI_TRUE;
+#ifdef USE_OCCT
+    jboolean occt = JNI_TRUE;
+    jboolean step = JNI_TRUE;
+#else
+    jboolean occt = JNI_FALSE;
+    jboolean step = JNI_FALSE;
+#endif
+    jboolean freecadBase = JNI_FALSE;
+    jboolean freecadApp = JNI_FALSE;
+    jboolean partModule = JNI_FALSE;
+    jboolean python = JNI_FALSE;
+    jboolean fcstd = JNI_FALSE;
+
+    return env->NewObject(cls, constr, loaded, occt, freecadBase, freecadApp, partModule, python, step, fcstd);
+}
+
 }

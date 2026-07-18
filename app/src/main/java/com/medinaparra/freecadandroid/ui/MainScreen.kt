@@ -31,6 +31,10 @@ import com.medinaparra.freecadandroid.nativebridge.MacroExecutionResult
 import com.medinaparra.freecadandroid.viewer.CadGLSurfaceView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.collectAsState
+import com.medinaparra.freecadandroid.viewmodel.CadViewModel
+import com.medinaparra.freecadandroid.importer.ImportState
 
 // State representer for CAD Objects in UI
 data class CadObjectState(
@@ -48,16 +52,20 @@ data class CadObjectState(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen() {
+fun MainScreen(viewModel: CadViewModel = viewModel()) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    // Active document states
-    var activeDocId by remember { mutableStateOf(0L) }
-    var activeDocName by remember { mutableStateOf("Modelo_Activo") }
-    
-    // UI Theme options
-    var isDarkTheme by remember { mutableStateOf(true) }
+    // Active document states from CadViewModel
+    val activeDocId by viewModel.activeDocId.collectAsState()
+    val activeDocName by viewModel.activeDocName.collectAsState()
+    val isDarkTheme by viewModel.isDarkTheme.collectAsState()
+    val objectsList by viewModel.objectsList.collectAsState()
+    val selectedObjectId by viewModel.selectedObjectId.collectAsState()
+    val pythonConsoleOutput by viewModel.pythonConsoleOutput.collectAsState()
+    val nativeCapabilities by viewModel.nativeCapabilities.collectAsState()
+    val importState by viewModel.importState.collectAsState()
+
     var showSettingsDialog by remember { mutableStateOf(false) }
     var qualityLevel by remember { mutableStateOf("Alta (24 segs)") }
     var maxExecutionTimeSecs by remember { mutableStateOf(5) }
@@ -66,12 +74,7 @@ fun MainScreen() {
     var isObjectTreeVisible by remember { mutableStateOf(true) }
     var isPropertiesPanelVisible by remember { mutableStateOf(true) }
 
-    // Object list states
-    val objectsList = remember { mutableStateListOf<CadObjectState>() }
-    var selectedObjectId by remember { mutableStateOf<Long?>(null) }
-
-    // Python console states
-    var pythonConsoleOutput by remember { mutableStateOf(">>> FreeCAD Python Console v0.26\n>>> Local interpreter ready.\n") }
+    // local macro state variable kept for UI text editing
     var macroInputCode by remember { mutableStateOf(
         """
         # -*- coding: utf-8 -*-
@@ -702,84 +705,10 @@ fun MainScreen() {
         }
     }
 
-    fun parseAndImportFCStd(fileName: String, filePath: String) {
-        val oldDocId = activeDocId
-        if (oldDocId != 0L) {
-            FreeCadNative.closeDocument(oldDocId)
-        }
-        
-        objectsList.clear()
-        selectedObjectId = null
-        pythonConsoleOutput += ">>> Importando archivo BRep/FCStd nativo: $fileName...\n"
-        
-        val result = FreeCadNative.importBrep(fileName, filePath)
-        if (result != null && result.success) {
-            activeDocId = result.documentId
-            activeDocName = fileName
-            
-            val objId = 1L
-            objectsList.add(CadObjectState(objId, fileName, "FCSTD_GEOMETRY", dim1 = 0f, dim2 = 0f, dim3 = 0f))
-            selectedObjectId = objId
-            
-            FreeCadNative.recompute(activeDocId)
-            triggerViewportRedraw()
-            pythonConsoleOutput += ">>> ¡Archivo BRep/FCStd cargado con éxito usando OpenCASCADE Technology!\n"
-            pythonConsoleOutput += ">>> Sólidos detectados: ${result.objectCount}, Vértices: ${result.vertexCount}, Triángulos: ${result.triangleCount}\n"
-            Toast.makeText(context, "FCStd/BRep cargado con éxito con OCCT", Toast.LENGTH_LONG).show()
-        } else {
-            val errorMsg = result?.errorMessage ?: FreeCadNative.getLastNativeError() ?: "Error de importación desconocido."
-            pythonConsoleOutput += ">>> ERROR: No se pudo importar el archivo FCStd/BRep.\n>>> Detalle: $errorMsg\n"
-            Toast.makeText(context, "Error: $errorMsg", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    fun parseAndImportStep(fileName: String, filePath: String) {
-        val oldDocId = activeDocId
-        if (oldDocId != 0L) {
-            FreeCadNative.closeDocument(oldDocId)
-        }
-        
-        objectsList.clear()
-        selectedObjectId = null
-        pythonConsoleOutput += ">>> Importando archivo STEP nativo: $fileName...\n"
-        
-        val result = FreeCadNative.importStep(fileName, filePath)
-        if (result != null && result.success) {
-            activeDocId = result.documentId
-            activeDocName = fileName
-            
-            val objId = 1L
-            objectsList.add(CadObjectState(objId, fileName, "STEP_GEOMETRY", dim1 = 0f, dim2 = 0f, dim3 = 0f))
-            selectedObjectId = objId
-            
-            FreeCadNative.recompute(activeDocId)
-            triggerViewportRedraw()
-            pythonConsoleOutput += ">>> ¡Archivo STEP cargado con éxito usando OpenCASCADE Technology!\n"
-            pythonConsoleOutput += ">>> Sólidos detectados: ${result.objectCount}, Vértices: ${result.vertexCount}, Triángulos: ${result.triangleCount}\n"
-            Toast.makeText(context, "STEP cargado con éxito con OCCT", Toast.LENGTH_LONG).show()
-        } else {
-            val errorMsg = result?.errorMessage ?: FreeCadNative.getLastNativeError() ?: "Error de importación desconocido."
-            pythonConsoleOutput += ">>> ERROR: No se pudo importar el archivo STEP.\n>>> Detalle: $errorMsg\n"
-            Toast.makeText(context, "Error: $errorMsg", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    // Initialize document at launch
-    LaunchedEffect(Unit) {
-        val docId = FreeCadNative.createDocument(activeDocName)
-        if (docId != 0L) {
-            activeDocId = docId
-        }
-    }
-
-    // Automatic 5-second viewport and model environment update loop
+    // Trigger viewport redraw when activeDocId updates
     LaunchedEffect(activeDocId) {
         if (activeDocId != 0L) {
-            while (true) {
-                kotlinx.coroutines.delay(5000L)
-                FreeCadNative.recompute(activeDocId)
-                triggerViewportRedraw()
-            }
+            triggerViewportRedraw()
         }
     }
 
@@ -794,47 +723,12 @@ fun MainScreen() {
                 } ?: "archivo"
                 
                 val lowerName = fileName.lowercase()
-                if (lowerName.endsWith(".fcstd") || lowerName.endsWith(".fcstd1")) {
-                    var shapeFile: java.io.File? = null
-                    context.contentResolver.openInputStream(it)?.use { rawInputStream ->
-                        val zipInputStream = java.util.zip.ZipInputStream(rawInputStream)
-                        var entry = zipInputStream.nextEntry
-                        while (entry != null) {
-                            if (entry.name.endsWith(".brp") || entry.name.endsWith(".brep")) {
-                                shapeFile = java.io.File(context.cacheDir, "temp_extracted_shape.brp")
-                                if (shapeFile!!.exists()) shapeFile!!.delete()
-                                shapeFile!!.outputStream().use { output ->
-                                    zipInputStream.copyTo(output)
-                                }
-                                break
-                            }
-                            zipInputStream.closeEntry()
-                            entry = zipInputStream.nextEntry
-                        }
-                    }
-                    if (shapeFile != null && shapeFile!!.exists()) {
-                        parseAndImportFCStd(fileName, shapeFile!!.absolutePath)
-                    } else {
-                        pythonConsoleOutput += ">>> No se encontró geometría BRep (.brp) en el archivo FCStd. Intentando cargar estructura...\n"
-                        val fallbackFile = createCacheFileFromUri(it, "model.fcstd")
-                        if (fallbackFile != null) {
-                            parseAndImportFCStd(fileName, fallbackFile.absolutePath)
-                        } else {
-                            pythonConsoleOutput += ">>> Error: No se pudo preparar el archivo FCStd.\n"
-                        }
-                    }
-                } else if (lowerName.endsWith(".step") || lowerName.endsWith(".stp")) {
-                    val cacheFile = createCacheFileFromUri(it, "model.step")
-                    if (cacheFile != null) {
-                        parseAndImportStep(fileName, cacheFile.absolutePath)
-                    } else {
-                        pythonConsoleOutput += ">>> Error: No se pudo preparar el archivo STEP en caché local.\n"
-                    }
+                if (lowerName.endsWith(".fcstd") || lowerName.endsWith(".fcstd1") || lowerName.endsWith(".step") || lowerName.endsWith(".stp")) {
+                    viewModel.importCadFile(context, it, fileName)
                 } else if (lowerName.endsWith(".fcmacro") || lowerName.endsWith(".py")) {
                     context.contentResolver.openInputStream(it)?.use { inputStream ->
                         val content = inputStream.bufferedReader().use { reader -> reader.readText() }
                         macroInputCode = content
-                        pythonConsoleOutput += ">>> FCMacro cargada con éxito. Listo para ejecutar!\n"
                         Toast.makeText(context, "Macro cargada con éxito!", Toast.LENGTH_SHORT).show()
                     }
                 } else {
@@ -843,618 +737,47 @@ fun MainScreen() {
                         val text = try { cacheFile.readText() } catch (e: Exception) { "" }
                         val isStep = text.contains("ISO-10303-21") || text.contains("HEADER;")
                         if (isStep) {
-                            parseAndImportStep(fileName, cacheFile.absolutePath)
+                            viewModel.importCadFile(context, it, fileName)
                         } else {
                             macroInputCode = text
-                            pythonConsoleOutput += ">>> Archivo de texto cargado como macro.\n"
                         }
                     }
                 }
             } catch (e: Exception) {
-                pythonConsoleOutput += ">>> Error al abrir archivo: ${e.localizedMessage}\n"
                 Toast.makeText(context, "Error al abrir el archivo", Toast.LENGTH_SHORT).show()
             }
         }
     }
 
-    fun runMacroInterpreter(code: String) {
-        val oldDocId = activeDocId
-        if (oldDocId != 0L) {
-            FreeCadNative.closeDocument(oldDocId)
-        }
-        val docId = FreeCadNative.createDocument(activeDocName)
-        if (docId != 0L) {
-            activeDocId = docId
-        } else {
-            pythonConsoleOutput += ">>> Error: No se pudo crear el documento CAD para la macro\n"
-            return
-        }
-        
-        objectsList.clear()
-        selectedObjectId = null
-        
-        val isPulleyMacro = code.contains("Polea_Motriz") || code.contains("145-CV-012") || code.contains("Polea") || code.contains("tambor") || code.contains("Manto_Metalico") || code.contains("eje_largo_total")
-        
-        if (isPulleyMacro) {
-            pythonConsoleOutput += ">>> Analizando macro de Polea Motriz 145-CV-012...\n"
-            
-            // Extract configurations dynamically
-            val incluirSoportes = Regex("""INCLUIR_SOPORTES_SIMPLIFICADOS\s*=\s*(True|False)""", RegexOption.IGNORE_CASE)
-                .find(code)?.groupValues?.get(1)?.lowercase()?.toBoolean() ?: true
-            
-            val incluirBackstop = Regex("""INCLUIR_BACKSTOP_SIMPLIFICADO\s*=\s*(True|False)""", RegexOption.IGNORE_CASE)
-                .find(code)?.groupValues?.get(1)?.lowercase()?.toBoolean() ?: true
-            
-            val incluirAcoplamientos = Regex("""INCLUIR_ACOPLAMIENTOS_FOTO\s*=\s*(True|False)""", RegexOption.IGNORE_CASE)
-                .find(code)?.groupValues?.get(1)?.lowercase()?.toBoolean() ?: true
-            
-            val incluirRevestimiento = Regex("""INCLUIR_REVESTIMIENTO_ROMBOIDAL\s*=\s*(True|False)""", RegexOption.IGNORE_CASE)
-                .find(code)?.groupValues?.get(1)?.lowercase()?.toBoolean() ?: true
-            
-            val modoLigero = Regex("""MODO_REVESTIMIENTO_LIGERO\s*=\s*(True|False)""", RegexOption.IGNORE_CASE)
-                .find(code)?.groupValues?.get(1)?.lowercase()?.toBoolean() ?: false
 
-            pythonConsoleOutput += ">>> Config: Soportes=$incluirSoportes, Backstop=$incluirBackstop, Acoplamientos=$incluirAcoplamientos, Revestimiento=$incluirRevestimiento, Ligero=$modoLigero\n"
-
-            // Extract parameters
-            val P = mutableMapOf<String, Double>()
-            // Defaults
-            P["eje_largo_total"] = 4369.0
-            P["centro_tambor_desde_izq"] = 1931.0
-            P["manto_largo"] = 1981.0
-            P["dist_centros_soportes"] = 2718.0
-            P["dist_centros_rodamientos_informe"] = 2653.0
-            P["manto_diametro_ext"] = 1219.0
-            P["manto_espesor_min"] = 25.0
-            P["revestimiento_espesor"] = 25.0
-            P["revestimiento_diametro_ext"] = 1269.0
-            P["placa_ceramica_altura"] = 5.0
-            P["disco_diametro"] = 1240.0
-            P["disco_espesor"] = 40.0
-            P["disco_agujero"] = 465.0
-            P["eje_diametro_extremos"] = 320.0
-            P["eje_diametro_bikon"] = 380.0
-            P["eje_diametro_central"] = 390.0
-            P["bikon_diametro_exterior"] = 465.0
-            P["chaveta_ancho"] = 63.0
-            P["chavetero_profundidad"] = 20.0
-            P["chavetero_largo_izq"] = 292.0
-            P["chavetero_largo_der"] = 813.0
-            P["soporte_largo_transversal_L"] = 1040.0
-            P["soporte_ancho_cuerpo_J"] = 820.0
-            P["soporte_espesor_axial_J1"] = 220.0
-            P["soporte_altura_eje_M"] = 360.0
-            P["soporte_perno"] = 36.0
-            P["soporte_cota_S"] = 30.0
-            P["acoplamiento_diametro_aprox"] = 565.0
-            P["acoplamiento_largo_aprox"] = 240.0
-            P["backstop_ancho"] = 880.0
-            P["backstop_alto"] = 820.0
-            P["backstop_espesor"] = 160.0
-
-            val dictRegex = Regex("""["']([a-zA-Z0-9_]+)["']\s*:\s*([0-9.-]+)""")
-            dictRegex.findAll(code).forEach { match ->
-                val key = match.groupValues[1]
-                val value = match.groupValues[2].toDoubleOrNull()
-                if (value != null) {
-                    P[key] = value
-                }
-            }
-
-            // Calculations
-            val eje_L = P["eje_largo_total"] ?: 4369.0
-            val x_centro_tambor = P["centro_tambor_desde_izq"] ?: 1931.0
-            val manto_largo = P["manto_largo"] ?: 1981.0
-            val x_manto_izq = x_centro_tambor - manto_largo / 2.0
-            val x_manto_der = x_centro_tambor + manto_largo / 2.0
-            val x_bikon_izq = x_manto_izq - 180.0
-            val x_bikon_der = x_manto_der + 180.0
-
-            val r_manto = (P["manto_diametro_ext"] ?: 1219.0) / 2.0
-            val r_disco = (P["disco_diametro"] ?: 1240.0) / 2.0
-            val t_disco = P["disco_espesor"] ?: 40.0
-
-            val r_bikon_ext = (P["bikon_diametro_exterior"] ?: 465.0) / 2.0
-            val r_revest = (P["revestimiento_diametro_ext"] ?: 1269.0) / 2.0
-
-            val centro_soporte_izq = x_centro_tambor - (P["dist_centros_soportes"] ?: 2718.0) / 2.0
-            val centro_soporte_der = x_centro_tambor + (P["dist_centros_soportes"] ?: 2718.0) / 2.0
-
-            val r_extremos = (P["eje_diametro_extremos"] ?: 320.0) / 2.0
-            val r_bikon = (P["eje_diametro_bikon"] ?: 380.0) / 2.0
-            val r_central = (P["eje_diametro_central"] ?: 390.0) / 2.0
-
-            pythonConsoleOutput += ">>> Calculando geometría de la polea: Largo Total=${eje_L}mm, Centro Tambor=${x_centro_tambor}mm...\n"
-
-            // Lambda to easily register objects
-            fun registerObj(label: String, type: String, tx_macro: Double, ty_macro: Double, tz_macro: Double, dim1: Double, dim2: Double, dim3: Double = 0.0) {
-                // Swap axes for OpenGL coordinate alignment: X_macro -> Z_view, Y_macro -> X_view, Z_macro -> Y_view
-                val tx_view = ty_macro
-                val ty_view = tz_macro
-                val tz_view = tx_macro
-
-                val newId = if (type == "BOX") {
-                    val lf_view = dim2 // W_macro
-                    val wf_view = dim3 // H_macro
-                    val hf_view = dim1 // L_macro
-                    FreeCadNative.createBox(docId, label, lf_view, wf_view, hf_view)
-                } else {
-                    FreeCadNative.createCylinder(docId, label, dim1, dim2)
-                }
-
-                if (newId != 0L) {
-                    FreeCadNative.translateObject(docId, newId, tx_view, ty_view, tz_view)
-                    objectsList.add(
-                        CadObjectState(
-                            id = newId,
-                            name = label,
-                            type = type,
-                            tx = tx_view.toFloat(),
-                            ty = ty_view.toFloat(),
-                            tz = tz_view.toFloat(),
-                            dim1 = dim1.toFloat(),
-                            dim2 = dim2.toFloat(),
-                            dim3 = dim3.toFloat()
-                        )
-                    )
-                }
-            }
-
-            // 01 - EJE ESCALONADO Y CHAVETEROS
-            registerObj("Eje_Extremo_Izquierdo", "CYLINDER", 0.0, 0.0, 0.0, r_extremos, x_bikon_izq)
-            registerObj("Eje_Asiento_BIKON_Izquierdo", "CYLINDER", x_bikon_izq, 0.0, 0.0, r_bikon, x_manto_izq - x_bikon_izq)
-            registerObj("Eje_Cuerpo_Central", "CYLINDER", x_manto_izq, 0.0, 0.0, r_central, manto_largo)
-            registerObj("Eje_Asiento_BIKON_Derecho", "CYLINDER", x_manto_der, 0.0, 0.0, r_bikon, x_bikon_der - x_manto_der)
-            registerObj("Eje_Extremo_Derecho", "CYLINDER", x_bikon_der, 0.0, 0.0, r_extremos, eje_L - x_bikon_der)
-
-            // Chavetas
-            val kw = P["chaveta_ancho"] ?: 63.0
-            val kd = P["chavetero_profundidad"] ?: 20.0
-            val ch_l_izq = P["chavetero_largo_izq"] ?: 292.0
-            val ch_l_der = P["chavetero_largo_der"] ?: 813.0
-            registerObj("Chaveta_Referencia_Izquierda", "BOX", 6.0, -(kw - 1.0) / 2.0, r_extremos - kd + 0.5, ch_l_izq - 12.0, kw - 1.0, kd)
-            registerObj("Chaveta_Referencia_Derecha", "BOX", eje_L - ch_l_der + 6.0, -(kw - 1.0) / 2.0, r_extremos - kd + 0.5, ch_l_der - 12.0, kw - 1.0, kd)
-
-            // 02 - MANTO, DISCOS Y CUBOS
-            registerObj("Manto_Metalico", "CYLINDER", x_manto_izq, 0.0, 0.0, r_manto, manto_largo)
-            registerObj("Disco_Lateral_Izquierdo", "CYLINDER", x_manto_izq - t_disco / 2.0, 0.0, 0.0, r_disco, t_disco)
-            registerObj("Disco_Lateral_Derecho", "CYLINDER", x_manto_der - t_disco / 2.0, 0.0, 0.0, r_disco, t_disco)
-
-            // Cubos conicos simplificados como cilindros
-            registerObj("Cubo_Conico_Izquierdo", "CYLINDER", x_manto_izq - t_disco / 2.0 - 95.0, 0.0, 0.0, 190.0, 95.0)
-            registerObj("Cubo_Conico_Derecho", "CYLINDER", x_manto_der + t_disco / 2.0, 0.0, 0.0, 190.0, 95.0)
-
-            // Elementos BIKON
-            registerObj("BIKON_2006_Izquierdo", "CYLINDER", x_manto_izq - 48.0, 0.0, 0.0, r_bikon_ext, 36.0)
-            registerObj("BIKON_2006_Derecho", "CYLINDER", x_manto_der + 12.0, 0.0, 0.0, r_bikon_ext, 36.0)
-
-            // 03 - REVESTIMIENTO SBR Y PLACAS ROMBOIDALES
-            if (incluirRevestimiento) {
-                registerObj("Base_Revestimiento_SBR", "CYLINDER", x_manto_izq, 0.0, 0.0, r_revest, manto_largo)
-                
-                // Optimized representative ceramic plates for responsiveness
-                val numPlates = if (modoLigero) 6 else 12
-                val paso_x = manto_largo / (numPlates + 1)
-                val largo_rombo = paso_x * 0.8
-                val ancho_rombo = 60.0
-                val h_placa = P["placa_ceramica_altura"] ?: 5.0
-                for (i in 1..numPlates) {
-                    val px = x_manto_izq + i * paso_x
-                    val angle = (i * 2.0 * Math.PI / numPlates)
-                    val py = (r_revest * Math.cos(angle))
-                    val pz = (r_revest * Math.sin(angle))
-                    registerObj("Placa_Rombo_$i", "BOX", px, py - ancho_rombo / 2.0, pz, largo_rombo, ancho_rombo, h_placa)
-                }
-            }
-
-            // 04 - SOPORTES SKF SNL 3268
-            if (incluirSoportes) {
-                val t_sop = P["soporte_espesor_axial_J1"] ?: 220.0
-                val w_sop = P["soporte_largo_transversal_L"] ?: 1040.0
-                val h_sop = P["soporte_altura_eje_M"] ?: 360.0
-
-                // Izquierdo (Fijo)
-                registerObj("Soporte_Flotante_SNL_3268", "BOX", centro_soporte_izq - t_sop / 2.0, -w_sop / 2.0, -h_sop, t_sop, w_sop, h_sop * 2.0)
-                registerObj("Rodamiento_Flotante_23268", "CYLINDER", centro_soporte_izq - 75.0, 0.0, 0.0, 205.0, 150.0)
-                registerObj("Sello_Taconite_Flot_A", "CYLINDER", centro_soporte_izq - t_sop / 2.0 - 48.0, 0.0, 0.0, 222.0, 17.0)
-                registerObj("Sello_Taconite_Flot_B", "CYLINDER", centro_soporte_izq + t_sop / 2.0 + 2.0, 0.0, 0.0, 222.0, 17.0)
-
-                // Derecho (Flotante)
-                registerObj("Soporte_Fijo_SNL_3268", "BOX", centro_soporte_der - t_sop / 2.0, -w_sop / 2.0, -h_sop, t_sop, w_sop, h_sop * 2.0)
-                registerObj("Rodamiento_Fijo_23268", "CYLINDER", centro_soporte_der - 75.0, 0.0, 0.0, 205.0, 150.0)
-                registerObj("Sello_Taconite_Fijo_A", "CYLINDER", centro_soporte_der - t_sop / 2.0 - 48.0, 0.0, 0.0, 222.0, 17.0)
-                registerObj("Sello_Taconite_Fijo_B", "CYLINDER", centro_soporte_der + t_sop / 2.0 + 2.0, 0.0, 0.0, 222.0, 17.0)
-            }
-
-            // 05 - ACCESORIOS (ACOPLAMIENTOS Y BACKSTOP)
-            if (incluirAcoplamientos) {
-                val d_acop = P["acoplamiento_diametro_aprox"] ?: 565.0
-                val l_acop = P["acoplamiento_largo_aprox"] ?: 240.0
-                
-                // Izquierdo
-                registerObj("Cubo_Acoplamiento_Izquierdo", "CYLINDER", 0.0, 0.0, 0.0, 205.0, l_acop)
-                registerObj("Corona_Acoplamiento_Izquierda", "CYLINDER", 0.0, 0.0, 0.0, d_acop / 2.0, 82.0)
-
-                // Derecho
-                registerObj("Cubo_Acoplamiento_Derecho", "CYLINDER", eje_L - l_acop, 0.0, 0.0, 205.0, l_acop)
-                registerObj("Corona_Acoplamiento_Derecha", "CYLINDER", eje_L - 82.0, 0.0, 0.0, d_acop / 2.0, 82.0)
-            }
-
-            if (incluirBackstop) {
-                val t_bs = P["backstop_espesor"] ?: 160.0
-                val w_bs = P["backstop_ancho"] ?: 880.0
-                val h_bs = P["backstop_alto"] ?: 820.0
-                val x_bs = centro_soporte_izq - (P["soporte_espesor_axial_J1"] ?: 220.0) / 2.0 - t_bs - 8.0
-
-                registerObj("Backstop_FALK_1165_NRTA", "BOX", x_bs, -w_bs / 2.0, -h_bs / 2.0, t_bs, w_bs, h_bs)
-                registerObj("Tapa_Backstop_SNL", "CYLINDER", x_bs - 35.0, 0.0, 0.0, 295.0, 42.0)
-            }
-
-            selectedObjectId = objectsList.firstOrNull()?.id
-            pythonConsoleOutput += ">>> Macro completada: Polea Motriz 145CV012 Pos.6 / OT-1633\n"
-            pythonConsoleOutput += ">>> Cotas interpretadas: eje ${eje_L}mm; manto ${manto_largo}mm; OD revestimiento ${(r_revest * 2.0).toInt()}mm.\n"
-            pythonConsoleOutput += ">>> Árbol de objetos generado con ${objectsList.size} sólidos CAD.\n"
-            Toast.makeText(context, "Macro ejecutada: Polea Motriz generada con ${objectsList.size} sólidos", Toast.LENGTH_LONG).show()
-
-        } else if (code.contains("Flender") || code.contains("Vestas") || code.contains("construir_ensamble") || code.contains("Multiplicadora")) {
-            // Advanced Flender Multiplier Powertrain Gearbox Macro (9 axial-exploded components)
-            val components = listOf(
-                Triple("C1_Tapa_Frontal_LSS", 37.5f, 9.0f),
-                Triple("C2_Carcasa_Planetaria", 37.5f, 16.0f),
-                Triple("C3_Portasatelites", 34.5f, 10.0f),
-                Triple("C4_Acople_Intermedio", 34.5f, 8.0f),
-                Triple("C5_Rueda_Helicoidal_E2", 30.0f, 11.0f),
-                Triple("C6_Eje_IMS_Pinon", 21.0f, 14.0f),
-                Triple("C7_Pinon_HSS", 24.5f, 14.0f),
-                Triple("C8_Acople_HSS", 24.5f, 9.0f),
-                Triple("C9_Carcasa_Principal", 40.0f, 36.0f)
-            )
-            val offsetsX = listOf(0.0, 22.0, 51.0, 74.0, 95.0, 119.0, 146.0, 173.0, 195.0)
-            
-            for (i in components.indices) {
-                val comp = components[i]
-                val name = comp.first
-                val radius = comp.second
-                val height = comp.third
-                val tx = offsetsX[i]
-                
-                val newId = FreeCadNative.createCylinder(docId, name, radius.toDouble(), height.toDouble())
-                if (newId != 0L) {
-                    FreeCadNative.translateObject(docId, newId, tx, 0.0, 0.0)
-                    objectsList.add(
-                        CadObjectState(
-                            id = newId,
-                            name = name,
-                            type = "CYLINDER",
-                            dim1 = radius,
-                            dim2 = height,
-                            tx = tx.toFloat(),
-                            ty = 0f,
-                            tz = 0f
-                        )
-                    )
-                }
-            }
-            if (objectsList.isNotEmpty()) {
-                selectedObjectId = objectsList.first().id
-            }
-        } else {
-            pythonConsoleOutput += ">>> Inicializando ejecución de macro Python FreeCAD...\n"
-            val vars = mutableMapOf<String, Double>()
-            val varToId = mutableMapOf<String, Long>()
-            val lines = code.lines()
-            
-            // Evaluates math expressions with variable substitution
-            fun evalSimpleMath(expr: String): Double {
-                var clean = expr.replace(" ", "")
-                if (clean.isEmpty()) return 0.0
-                
-                clean = clean.replace("Math.PI", "3.14159265").replace("math.pi", "3.14159265")
-
-                // Handle simple division/multiplication first
-                val simpleRegex = Regex("""([0-9.eE+-]+)([\*/])([0-9.eE+-]+)""")
-                var match = simpleRegex.find(clean)
-                while (match != null) {
-                    val op1 = match.groupValues[1].toDoubleOrNull() ?: 0.0
-                    val operator = match.groupValues[2]
-                    val op2 = match.groupValues[3].toDoubleOrNull() ?: 0.0
-                    val res = if (operator == "*") op1 * op2 else if (op2 != 0.0) op1 / op2 else 1.0
-                    clean = clean.replaceFirst(match.value, res.toString())
-                    match = simpleRegex.find(clean)
-                }
-                
-                // Handle addition/subtraction
-                val addRegex = Regex("""([0-9.eE+-]+)([\+-])([0-9.eE+-]+)""")
-                match = addRegex.find(clean)
-                while (match != null) {
-                    val op1 = match.groupValues[1].toDoubleOrNull() ?: 0.0
-                    val operator = match.groupValues[2]
-                    val op2 = match.groupValues[3].toDoubleOrNull() ?: 0.0
-                    val res = if (operator == "+") op1 + op2 else op1 - op2
-                    clean = clean.replaceFirst(match.value, res.toString())
-                    match = addRegex.find(clean)
-                }
-                
-                return clean.toDoubleOrNull() ?: 0.0
-            }
-
-            fun evaluateExpr(expr: String, currentVars: Map<String, Double>): Double {
-                var s = expr.trim()
-                val sortedKeys = currentVars.keys.sortedByDescending { it.length }
-                for (k in sortedKeys) {
-                    val v = currentVars[k] ?: 0.0
-                    s = s.replace(Regex("\\b$k\\b"), v.toString())
-                }
-                return try {
-                    evalSimpleMath(s)
-                } catch (e: Exception) {
-                    s.toDoubleOrNull() ?: 0.0
-                }
-            }
-
-            fun executeSingleLine(lineStr: String, currentVars: MutableMap<String, Double>, currentVarToId: MutableMap<String, Long>) {
-                val trimmed = lineStr.trim()
-                if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("import")) return
-                
-                if (trimmed.startsWith("print(") && trimmed.endsWith(")")) {
-                    var msg = trimmed.removePrefix("print(").removeSuffix(")")
-                    if (msg.startsWith("f\"") || msg.startsWith("f'")) {
-                        msg = msg.substring(2, msg.length - 1)
-                        for ((k, v) in currentVars) {
-                            msg = msg.replace("{$k}", v.toString())
-                        }
-                    } else if ((msg.startsWith("\"") && msg.endsWith("\"")) || (msg.startsWith("'") && msg.endsWith("'"))) {
-                        msg = msg.substring(1, msg.length - 1)
-                    } else {
-                        msg = currentVars[msg]?.toString() ?: msg
-                    }
-                    pythonConsoleOutput += "$msg\n"
-                    return
-                }
-
-                if (trimmed.contains("=") && !trimmed.contains("addObject") && !trimmed.contains(".") && !trimmed.contains("(")) {
-                    val parts = trimmed.split("=")
-                    if (parts.size == 2) {
-                        val varName = parts[0].trim()
-                        val expr = parts[1].trim()
-                        if (varName.matches(Regex("""[a-zA-Z_][a-zA-Z0-9_]*"""))) {
-                            val evaluated = evaluateExpr(expr, currentVars)
-                            currentVars[varName] = evaluated
-                            return
-                        }
-                    }
-                }
-
-                if (trimmed.contains("addObject")) {
-                    val varName = trimmed.substringBefore("=").trim()
-                    
-                    val boxMatch = Regex("""addObject\s*\(\s*["']Part::Box["']\s*,\s*["']([^"']+)["']\s*\)""", RegexOption.IGNORE_CASE).find(trimmed)
-                    val cylMatch = Regex("""addObject\s*\(\s*["']Part::Cylinder["']\s*,\s*["']([^"']+)["']\s*\)""", RegexOption.IGNORE_CASE).find(trimmed)
-                    val sphMatch = Regex("""addObject\s*\(\s*["']Part::Sphere["']\s*,\s*["']([^"']+)["']\s*\)""", RegexOption.IGNORE_CASE).find(trimmed)
-                    val coneMatch = Regex("""addObject\s*\(\s*["']Part::Cone["']\s*,\s*["']([^"']+)["']\s*\)""", RegexOption.IGNORE_CASE).find(trimmed)
-
-                    if (boxMatch != null) {
-                        val label = boxMatch.groupValues[1]
-                        val newId = FreeCadNative.createBox(docId, label, 40.0, 40.0, 40.0)
-                        if (newId != 0L) {
-                            currentVarToId[varName] = newId
-                            objectsList.add(CadObjectState(newId, label, "BOX", dim1 = 40f, dim2 = 40f, dim3 = 40f))
-                            selectedObjectId = newId
-                        }
-                    } else if (cylMatch != null) {
-                        val label = cylMatch.groupValues[1]
-                        val newId = FreeCadNative.createCylinder(docId, label, 20.0, 50.0)
-                        if (newId != 0L) {
-                            currentVarToId[varName] = newId
-                            objectsList.add(CadObjectState(newId, label, "CYLINDER", dim1 = 20f, dim2 = 50f))
-                            selectedObjectId = newId
-                        }
-                    } else if (sphMatch != null) {
-                        val label = sphMatch.groupValues[1]
-                        val newId = FreeCadNative.createSphere(docId, label, 20.0)
-                        if (newId != 0L) {
-                            currentVarToId[varName] = newId
-                            objectsList.add(CadObjectState(newId, label, "SPHERE", dim1 = 20f))
-                            selectedObjectId = newId
-                        }
-                    } else if (coneMatch != null) {
-                        val label = coneMatch.groupValues[1]
-                        val newId = FreeCadNative.createCone(docId, label, 20.0, 5.0, 50.0)
-                        if (newId != 0L) {
-                            currentVarToId[varName] = newId
-                            objectsList.add(CadObjectState(newId, label, "CONE", dim1 = 20f, dim2 = 5f, dim3 = 50f))
-                            selectedObjectId = newId
-                        }
-                    }
-                    return
-                }
-
-                if (trimmed.contains(".") && trimmed.contains("=")) {
-                    val leftHand = trimmed.substringBefore("=").trim()
-                    val rightHand = trimmed.substringAfter("=").trim()
-                    val varName = leftHand.substringBefore(".").trim()
-                    val propName = leftHand.substringAfter(".").trim()
-                    val id = currentVarToId[varName] ?: return
-                    
-                    if (propName.startsWith("Placement.Base") || propName.startsWith("translate")) {
-                        val vectorMatch = Regex("""Vector\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)""", RegexOption.IGNORE_CASE).find(rightHand) ?:
-                                           Regex("""Vector\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)""", RegexOption.IGNORE_CASE).find(trimmed)
-                        if (vectorMatch != null) {
-                            val px = evaluateExpr(vectorMatch.groupValues[1], currentVars)
-                            val py = evaluateExpr(vectorMatch.groupValues[2], currentVars)
-                            val pz = evaluateExpr(vectorMatch.groupValues[3], currentVars)
-                            
-                            val tx = py
-                            val ty = pz
-                            val tz = px
-                            FreeCadNative.translateObject(docId, id, tx, ty, tz)
-                            val index = objectsList.indexOfFirst { it.id == id }
-                            if (index != -1) {
-                                val current = objectsList[index]
-                                objectsList[index] = current.copy(tx = tx.toFloat(), ty = ty.toFloat(), tz = tz.toFloat())
-                            }
-                        }
-                        return
-                    }
-
-                    val evalVal = evaluateExpr(rightHand, currentVars).toFloat()
-                    val index = objectsList.indexOfFirst { it.id == id }
-                    if (index != -1) {
-                        val current = objectsList[index]
-                        when (propName.lowercase()) {
-                            "length" -> {
-                                objectsList[index] = current.copy(dim1 = evalVal)
-                                FreeCadNative.updateObjectDimensions(docId, id, evalVal.toDouble(), current.dim2.toDouble(), current.dim3.toDouble())
-                            }
-                            "width" -> {
-                                objectsList[index] = current.copy(dim2 = evalVal)
-                                FreeCadNative.updateObjectDimensions(docId, id, current.dim1.toDouble(), evalVal.toDouble(), current.dim3.toDouble())
-                            }
-                            "height" -> {
-                                if (current.type == "BOX") {
-                                    objectsList[index] = current.copy(dim3 = evalVal)
-                                    FreeCadNative.updateObjectDimensions(docId, id, current.dim1.toDouble(), current.dim2.toDouble(), evalVal.toDouble())
-                                } else {
-                                    objectsList[index] = current.copy(dim2 = evalVal)
-                                    FreeCadNative.updateObjectDimensions(docId, id, current.dim1.toDouble(), evalVal.toDouble(), 0.0)
-                                }
-                            }
-                            "radius" -> {
-                                objectsList[index] = current.copy(dim1 = evalVal)
-                                FreeCadNative.updateObjectDimensions(docId, id, evalVal.toDouble(), current.dim2.toDouble(), current.dim3.toDouble())
-                            }
-                            "radius1" -> {
-                                objectsList[index] = current.copy(dim1 = evalVal)
-                                FreeCadNative.updateObjectDimensions(docId, id, evalVal.toDouble(), current.dim2.toDouble(), current.dim3.toDouble())
-                            }
-                            "radius2" -> {
-                                objectsList[index] = current.copy(dim2 = evalVal)
-                                FreeCadNative.updateObjectDimensions(docId, id, current.dim1.toDouble(), evalVal.toDouble(), current.dim3.toDouble())
-                            }
-                        }
-                    }
-                }
-            }
-
-            var lineIdx = 0
-            while (lineIdx < lines.size) {
-                val line = lines[lineIdx]
-                val trimmed = line.trim()
-                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    lineIdx++
-                    continue
-                }
-
-                if (trimmed.startsWith("for ") && trimmed.contains("range")) {
-                    val loopVarMatch = Regex("""for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+range\s*\(\s*([^)]+)\s*\)\s*:""").find(trimmed)
-                    if (loopVarMatch != null) {
-                        val loopVar = loopVarMatch.groupValues[1]
-                        val rangeMaxStr = loopVarMatch.groupValues[2].trim()
-                        val rangeMax = evaluateExpr(rangeMaxStr, vars).toInt()
-                        
-                        val loopBody = mutableListOf<String>()
-                        lineIdx++
-                        while (lineIdx < lines.size && (lines[lineIdx].startsWith("    ") || lines[lineIdx].startsWith("\t") || lines[lineIdx].isBlank())) {
-                            loopBody.add(lines[lineIdx])
-                            lineIdx++
-                        }
-
-                        pythonConsoleOutput += ">>> Ejecutando bucle para variable '$loopVar' hasta $rangeMax iteraciones...\n"
-                        for (currentVal in 0 until rangeMax) {
-                            val loopVars = vars.toMutableMap()
-                            loopVars[loopVar] = currentVal.toDouble()
-                            
-                            for (bodyLine in loopBody) {
-                                executeSingleLine(bodyLine, loopVars, varToId)
-                            }
-                            vars.putAll(loopVars)
-                        }
-                        continue
-                    }
-                }
-
-                executeSingleLine(trimmed, vars, varToId)
-                lineIdx++
-            }
-            pythonConsoleOutput += ">>> Ejecución macro Python FreeCAD completada con éxito. Documento reconstruído en 3D!\n"
-            Toast.makeText(context, "Macro Python ejecutada con éxito!", Toast.LENGTH_SHORT).show()
-        }
-        
-        FreeCadNative.recompute(docId)
-        triggerViewportRedraw()
-    }
-
-    // Auto-run the default pulley macro on startup once the document is ready
-    var hasRunDefaultMacro by remember { mutableStateOf(false) }
-    LaunchedEffect(activeDocId) {
-        if (activeDocId != 0L && !hasRunDefaultMacro) {
-            hasRunDefaultMacro = true
-            runMacroInterpreter(macroInputCode)
-        }
-    }
+    // Auto-run has been disabled to start with an honest empty scene.
 
     // Helper to insert a Box
     fun addNewBox() {
-        if (activeDocId == 0L) return
-        val count = objectsList.count { it.type == "BOX" } + 1
-        val name = "Caja_$count"
-        val boxId = FreeCadNative.createBox(activeDocId, name, 40.0, 40.0, 40.0)
-        if (boxId != 0L) {
-            val newObj = CadObjectState(boxId, name, "BOX")
-            objectsList.add(newObj)
-            selectedObjectId = boxId
-            FreeCadNative.recompute(activeDocId)
-            triggerViewportRedraw()
-            Toast.makeText(context, "Sólido '$name' insertado", Toast.LENGTH_SHORT).show()
-        }
+        viewModel.addNewBox()
+        triggerViewportRedraw()
+        Toast.makeText(context, "Sólido insertado", Toast.LENGTH_SHORT).show()
     }
 
     // Helper to insert a Cylinder
     fun addNewCylinder() {
-        if (activeDocId == 0L) return
-        val count = objectsList.count { it.type == "CYLINDER" } + 1
-        val name = "Cilindro_$count"
-        val cylId = FreeCadNative.createCylinder(activeDocId, name, 20.0, 50.0)
-        if (cylId != 0L) {
-            val newObj = CadObjectState(cylId, name, "CYLINDER", dim1 = 20f, dim2 = 50f)
-            objectsList.add(newObj)
-            selectedObjectId = cylId
-            FreeCadNative.recompute(activeDocId)
-            triggerViewportRedraw()
-            Toast.makeText(context, "Sólido '$name' insertado", Toast.LENGTH_SHORT).show()
-        }
+        viewModel.addNewCylinder()
+        triggerViewportRedraw()
+        Toast.makeText(context, "Sólido insertado", Toast.LENGTH_SHORT).show()
     }
 
     // Helper to insert a Sphere
     fun addNewSphere() {
-        if (activeDocId == 0L) return
-        val count = objectsList.count { it.type == "SPHERE" } + 1
-        val name = "Esfera_$count"
-        val sphereId = FreeCadNative.createSphere(activeDocId, name, 20.0)
-        if (sphereId != 0L) {
-            val newObj = CadObjectState(sphereId, name, "SPHERE", dim1 = 20f)
-            objectsList.add(newObj)
-            selectedObjectId = sphereId
-            FreeCadNative.recompute(activeDocId)
-            triggerViewportRedraw()
-            Toast.makeText(context, "Esfera '$name' insertada", Toast.LENGTH_SHORT).show()
-        }
+        viewModel.addNewSphere()
+        triggerViewportRedraw()
+        Toast.makeText(context, "Esfera insertada", Toast.LENGTH_SHORT).show()
     }
 
     // Helper to insert a Cone
     fun addNewCone() {
-        if (activeDocId == 0L) return
-        val count = objectsList.count { it.type == "CONE" } + 1
-        val name = "Cono_$count"
-        val coneId = FreeCadNative.createCone(activeDocId, name, 20.0, 5.0, 50.0)
-        if (coneId != 0L) {
-            val newObj = CadObjectState(coneId, name, "CONE", dim1 = 20f, dim2 = 5f, dim3 = 50f)
-            objectsList.add(newObj)
-            selectedObjectId = coneId
-            FreeCadNative.recompute(activeDocId)
-            triggerViewportRedraw()
-            Toast.makeText(context, "Cono '$name' insertado", Toast.LENGTH_SHORT).show()
-        }
+        viewModel.addNewCone()
+        triggerViewportRedraw()
+        Toast.makeText(context, "Cono insertado", Toast.LENGTH_SHORT).show()
     }
 
     // Design layout colors
@@ -1498,7 +821,7 @@ fun MainScreen() {
                             tint = if (isPropertiesPanelVisible) accentColor else textColor.copy(alpha = 0.6f)
                         )
                     }
-                    IconButton(onClick = { isDarkTheme = !isDarkTheme }) {
+                    IconButton(onClick = { viewModel.setTheme(!isDarkTheme) }) {
                         Icon(
                             imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Theme Switcher",
@@ -1603,7 +926,7 @@ fun MainScreen() {
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(4.dp))
                                             .background(if (isSelected) accentColor.copy(alpha = 0.25f) else Color.Transparent)
-                                            .clickable { selectedObjectId = obj.id }
+                                            .clickable { viewModel.selectObject(obj.id) }
                                             .padding(4.dp)
                                     ) {
                                         Icon(
@@ -1621,17 +944,8 @@ fun MainScreen() {
                                         )
                                         IconButton(
                                             onClick = {
-                                                val index = objectsList.indexOfFirst { it.id == obj.id }
-                                                if (index != -1) {
-                                                    val prev = objectsList[index]
-                                                    val newVisible = !prev.isVisible
-                                                    objectsList[index] = prev.copy(isVisible = newVisible)
-                                                    if (activeDocId != 0L) {
-                                                        FreeCadNative.setObjectVisibility(activeDocId, obj.id, newVisible)
-                                                        FreeCadNative.recompute(activeDocId)
-                                                    }
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.toggleObjectVisibility(obj.id)
+                                                triggerViewportRedraw()
                                             },
                                             modifier = Modifier.size(24.dp)
                                         ) {
@@ -1644,15 +958,7 @@ fun MainScreen() {
                                         }
                                         IconButton(
                                             onClick = {
-                                                // Remove object from native document first, recompute, then update local state
-                                                if (activeDocId != 0L) {
-                                                    FreeCadNative.deleteObject(activeDocId, obj.id)
-                                                    FreeCadNative.recompute(activeDocId)
-                                                }
-                                                objectsList.removeIf { it.id == obj.id }
-                                                if (selectedObjectId == obj.id) {
-                                                    selectedObjectId = objectsList.firstOrNull()?.id
-                                                }
+                                                viewModel.deleteObject(obj.id)
                                                 triggerViewportRedraw()
                                             },
                                             modifier = Modifier.size(24.dp)
@@ -1716,13 +1022,8 @@ fun MainScreen() {
                                 Slider(
                                     value = selObj.tx,
                                     onValueChange = { newVal ->
-                                        val idx = objectsList.indexOfFirst { it.id == sId }
-                                        if (idx != -1) {
-                                            objectsList[idx] = objectsList[idx].copy(tx = newVal)
-                                            FreeCadNative.translateObject(activeDocId, sId, newVal.toDouble(), objectsList[idx].ty.toDouble(), objectsList[idx].tz.toDouble())
-                                            FreeCadNative.recompute(activeDocId)
-                                            triggerViewportRedraw()
-                                        }
+                                        viewModel.updateObjectPosition(sId, newVal, selObj.ty, selObj.tz)
+                                        triggerViewportRedraw()
                                     },
                                     valueRange = -100f..100f,
                                     colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1732,13 +1033,8 @@ fun MainScreen() {
                                 Slider(
                                     value = selObj.ty,
                                     onValueChange = { newVal ->
-                                        val idx = objectsList.indexOfFirst { it.id == sId }
-                                        if (idx != -1) {
-                                            objectsList[idx] = objectsList[idx].copy(ty = newVal)
-                                            FreeCadNative.translateObject(activeDocId, sId, objectsList[idx].tx.toDouble(), newVal.toDouble(), objectsList[idx].tz.toDouble())
-                                            FreeCadNative.recompute(activeDocId)
-                                            triggerViewportRedraw()
-                                        }
+                                        viewModel.updateObjectPosition(sId, selObj.tx, newVal, selObj.tz)
+                                        triggerViewportRedraw()
                                     },
                                     valueRange = -100f..100f,
                                     colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1748,13 +1044,8 @@ fun MainScreen() {
                                 Slider(
                                     value = selObj.tz,
                                     onValueChange = { newVal ->
-                                        val idx = objectsList.indexOfFirst { it.id == sId }
-                                        if (idx != -1) {
-                                            objectsList[idx] = objectsList[idx].copy(tz = newVal)
-                                            FreeCadNative.translateObject(activeDocId, sId, objectsList[idx].tx.toDouble(), objectsList[idx].ty.toDouble(), newVal.toDouble())
-                                            FreeCadNative.recompute(activeDocId)
-                                            triggerViewportRedraw()
-                                        }
+                                        viewModel.updateObjectPosition(sId, selObj.tx, selObj.ty, newVal)
+                                        triggerViewportRedraw()
                                     },
                                     valueRange = -100f..100f,
                                     colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1764,19 +1055,14 @@ fun MainScreen() {
                                 HorizontalDivider(color = textColor.copy(alpha = 0.15f))
                                 Spacer(Modifier.height(4.dp))
 
-                                when (selObj.type) {
+                                 when (selObj.type) {
                                     "BOX" -> {
                                         Text("Largo: ${selObj.dim1.toInt()} mm", fontSize = 10.sp, color = textColor)
                                         Slider(
                                             value = selObj.dim1,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim1 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, newVal.toDouble(), objectsList[idx].dim2.toDouble(), objectsList[idx].dim3.toDouble())
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, newVal, selObj.dim2, selObj.dim3)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..200f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1786,13 +1072,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim2,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim2 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, objectsList[idx].dim1.toDouble(), newVal.toDouble(), objectsList[idx].dim3.toDouble())
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, selObj.dim1, newVal, selObj.dim3)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..200f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1802,13 +1083,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim3,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim3 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, objectsList[idx].dim1.toDouble(), objectsList[idx].dim2.toDouble(), newVal.toDouble())
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, selObj.dim1, selObj.dim2, newVal)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..200f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1819,13 +1095,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim1,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim1 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, newVal.toDouble(), objectsList[idx].dim2.toDouble(), 0.0)
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, newVal, selObj.dim2, 0f)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..100f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1835,13 +1106,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim2,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim2 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, objectsList[idx].dim1.toDouble(), newVal.toDouble(), 0.0)
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, selObj.dim1, newVal, 0f)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..200f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1852,13 +1118,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim1,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim1 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, newVal.toDouble(), 0.0, 0.0)
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, newVal, 0f, 0f)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..100f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1869,13 +1130,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim1,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim1 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, newVal.toDouble(), objectsList[idx].dim2.toDouble(), objectsList[idx].dim3.toDouble())
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, newVal, selObj.dim2, selObj.dim3)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..100f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1885,13 +1141,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim2,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim2 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, objectsList[idx].dim1.toDouble(), newVal.toDouble(), objectsList[idx].dim3.toDouble())
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, selObj.dim1, newVal, selObj.dim3)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 0f..100f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -1901,13 +1152,8 @@ fun MainScreen() {
                                         Slider(
                                             value = selObj.dim3,
                                             onValueChange = { newVal ->
-                                                val idx = objectsList.indexOfFirst { it.id == sId }
-                                                if (idx != -1) {
-                                                    objectsList[idx] = objectsList[idx].copy(dim3 = newVal)
-                                                    FreeCadNative.updateObjectDimensions(activeDocId, sId, objectsList[idx].dim1.toDouble(), objectsList[idx].dim2.toDouble(), newVal.toDouble())
-                                                    FreeCadNative.recompute(activeDocId)
-                                                    triggerViewportRedraw()
-                                                }
+                                                viewModel.updateObjectDimensions(sId, selObj.dim1, selObj.dim2, newVal)
+                                                triggerViewportRedraw()
                                             },
                                             valueRange = 1f..200f,
                                             colors = SliderDefaults.colors(thumbColor = accentColor, activeTrackColor = accentColor)
@@ -2017,17 +1263,15 @@ fun MainScreen() {
                                     onClick = {
                                         // Execute macro
                                         isMacroRunning = true
-                                        pythonConsoleOutput += ">>> Executing macro...\n"
+                                        viewModel.appendConsoleLog(">>> Executing macro...\n")
                                         coroutineScope.launch {
                                             delay(500) // Simulate processing delay
-                                            // Run the local dynamic macro interpreter to build solids & update viewport in real-time
-                                            runMacroInterpreter(macroInputCode)
                                             
                                             val result = FreeCadNative.executePythonMacro(activeDocId, macroInputCode, maxExecutionTimeSecs * 1000L)
                                             if (result != null && result.success) {
-                                                pythonConsoleOutput += result.stdout + "\n>>> Done. (${result.executionTimeMs} ms)\n"
+                                                viewModel.appendConsoleLog(result.stdout + "\n>>> Done. (${result.executionTimeMs} ms)\n")
                                             } else {
-                                                pythonConsoleOutput += ">>> Process killed/timed out.\n"
+                                                viewModel.appendConsoleLog(">>> Process killed/timed out.\n")
                                             }
                                             isMacroRunning = false
                                         }
@@ -2044,7 +1288,7 @@ fun MainScreen() {
                                 Button(
                                     onClick = {
                                         isMacroRunning = false
-                                        pythonConsoleOutput += ">>> Macro stopped cooperatively.\n"
+                                        viewModel.appendConsoleLog(">>> Macro stopped cooperatively.\n")
                                     },
                                     enabled = isMacroRunning,
                                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
@@ -2092,7 +1336,7 @@ fun MainScreen() {
                                 Text("Consola de Salida", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, fontSize = 11.sp, color = textColor)
                             }
                             TextButton(
-                                onClick = { pythonConsoleOutput = ">>> Consola limpia.\n" },
+                                onClick = { viewModel.clearConsole() },
                                 modifier = Modifier.height(24.dp),
                                 contentPadding = PaddingValues(horizontal = 4.dp)
                             ) {
