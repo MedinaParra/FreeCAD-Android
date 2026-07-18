@@ -290,22 +290,38 @@ bool CadDocument::loadStep(const std::string& filePath) {
 #ifdef USE_OCCT
     LOGI("loadStep: Reading STEP file: %s", filePath.c_str());
     STEPControl_Reader reader;
-    IFSelect_ReturnStatus status = reader.ReadFile(filePath.c_str());
+    const IFSelect_ReturnStatus status = reader.ReadFile(filePath.c_str());
     if (status != IFSelect_RetDone) {
         LOGE("loadStep: ReadFile failed with status: %d", status);
         return false;
     }
     
-    reader.TransferRoots();
-    importedShape = reader.OneShape();
-    hasImportedShape = !importedShape.IsNull();
-    
-    if (hasImportedShape) {
-        LOGI("loadStep: Successfully loaded solid shape from STEP.");
-    } else {
-        LOGE("loadStep: Result shape is null.");
+    const Standard_Integer transferred = reader.TransferRoots();
+    if (transferred <= 0) {
+        LOGE("loadStep: TransferRoots returned non-positive value: %d", transferred);
+        return false;
     }
-    return hasImportedShape;
+    
+    TopoDS_Shape shape = reader.OneShape();
+    if (shape.IsNull()) {
+        LOGE("loadStep: Result shape is null.");
+        return false;
+    }
+    
+    importedShape = shape;
+    hasImportedShape = true;
+    LOGI("loadStep: Successfully loaded solid shape from STEP.");
+
+    // Create and register a real object with native ID
+    auto obj = std::make_shared<CadObject>();
+    obj->id = nextObjectId++;
+    size_t lastSlash = filePath.find_last_of("/\\");
+    std::string fileName = (lastSlash == std::string::npos) ? filePath : filePath.substr(lastSlash + 1);
+    obj->name = fileName;
+    obj->type = ObjectType::IMPORTED;
+    objects[obj->id] = obj;
+    
+    return true;
 #else
     LOGE("loadStep: OpenCASCADE is NOT compiled in this build! Cannot import STEP file natively.");
     (void)filePath;
@@ -340,6 +356,15 @@ bool CadDocument::loadBrep(const std::string& filePath) {
             builder.Add(compound, shape);
             anyLoaded = true;
             LOGI("loadBrep: Successfully loaded solid shape from: %s", path.c_str());
+
+            // Register a real object for each successfully imported BRep
+            auto obj = std::make_shared<CadObject>();
+            obj->id = nextObjectId++;
+            size_t lastSlash = path.find_last_of("/\\");
+            std::string fileName = (lastSlash == std::string::npos) ? path : path.substr(lastSlash + 1);
+            obj->name = fileName;
+            obj->type = ObjectType::IMPORTED;
+            objects[obj->id] = obj;
         } else {
             LOGE("loadBrep: Failed to read shape from: %s", path.c_str());
         }
@@ -364,7 +389,21 @@ bool CadDocument::loadBrep(const std::string& filePath) {
 MeshData CadDocument::getSceneMesh() {
 #ifdef USE_OCCT
     if (hasImportedShape) {
-        return triangulateShape(importedShape, 0.5, 0.5);
+        bool anyVisible = false;
+        for (const auto& pair : objects) {
+            if (pair.second->type == ObjectType::IMPORTED && pair.second->visible) {
+                anyVisible = true;
+                break;
+            }
+        }
+        if (anyVisible) {
+            return triangulateShape(importedShape, 0.5, 0.5);
+        } else {
+            MeshData emptyMesh;
+            emptyMesh.minX = emptyMesh.minY = emptyMesh.minZ = -10.0f;
+            emptyMesh.maxX = emptyMesh.maxY = emptyMesh.maxZ = 10.0f;
+            return emptyMesh;
+        }
     }
 #endif
 

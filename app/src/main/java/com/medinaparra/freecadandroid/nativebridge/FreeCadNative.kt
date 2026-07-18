@@ -144,7 +144,7 @@ object FreeCadNative {
             return CadImportResult(
                 success = false,
                 documentId = 0,
-                objectCount = 0,
+                objects = emptyArray(),
                 vertexCount = 0,
                 triangleCount = 0,
                 errorCode = "NATIVE_LIB_NOT_LOADED",
@@ -157,7 +157,7 @@ object FreeCadNative {
             CadImportResult(
                 success = false,
                 documentId = 0,
-                objectCount = 0,
+                objects = emptyArray(),
                 vertexCount = 0,
                 triangleCount = 0,
                 errorCode = "UNSATISFIED_LINK",
@@ -171,7 +171,7 @@ object FreeCadNative {
             return CadImportResult(
                 success = false,
                 documentId = 0,
-                objectCount = 0,
+                objects = emptyArray(),
                 vertexCount = 0,
                 triangleCount = 0,
                 errorCode = "NATIVE_LIB_NOT_LOADED",
@@ -184,7 +184,7 @@ object FreeCadNative {
             CadImportResult(
                 success = false,
                 documentId = 0,
-                objectCount = 0,
+                objects = emptyArray(),
                 vertexCount = 0,
                 triangleCount = 0,
                 errorCode = "UNSATISFIED_LINK",
@@ -232,7 +232,8 @@ object FreeCadNative {
                 partModuleAvailable = false,
                 pythonAvailable = false,
                 stepImportAvailable = false,
-                fcStdImportAvailable = false
+                fcStdBrepExtractionAvailable = false,
+                fcStdCoreAvailable = false
             )
         }
         return try {
@@ -246,7 +247,8 @@ object FreeCadNative {
                 partModuleAvailable = false,
                 pythonAvailable = false,
                 stepImportAvailable = false,
-                fcStdImportAvailable = false
+                fcStdBrepExtractionAvailable = false,
+                fcStdCoreAvailable = false
             )
         }
     }

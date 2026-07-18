@@ -31,7 +31,7 @@ class CadViewModel : ViewModel() {
     private val _importState = MutableStateFlow<ImportState>(ImportState.Idle)
     val importState: StateFlow<ImportState> = _importState.asStateFlow()
 
-    private val _pythonConsoleOutput = MutableStateFlow(">>> FreeCAD Python Console v0.26\n>>> Local interpreter ready.\n")
+    private val _pythonConsoleOutput = MutableStateFlow("Backend CAD: comprobando capacidades nativas...\n")
     val pythonConsoleOutput: StateFlow<String> = _pythonConsoleOutput.asStateFlow()
 
     private val _nativeCapabilities = MutableStateFlow(
@@ -43,7 +43,8 @@ class CadViewModel : ViewModel() {
             partModuleAvailable = false,
             pythonAvailable = false,
             stepImportAvailable = false,
-            fcStdImportAvailable = false
+            fcStdBrepExtractionAvailable = false,
+            fcStdCoreAvailable = false
         )
     )
     val nativeCapabilities: StateFlow<NativeCapabilities> = _nativeCapabilities.asStateFlow()
@@ -57,13 +58,16 @@ class CadViewModel : ViewModel() {
             val caps = FreeCadNative.getNativeCapabilities()
             _nativeCapabilities.value = caps
             
-            // Log status of the backend to the user console
-            var msg = ">>> Backend CAD: " + (if (caps.nativeLibraryLoaded) "CARGADO" else "ERROR AL CARGAR") + "\n"
-            msg += ">>> OpenCASCADE (OCCT): " + (if (caps.occtAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
-            msg += ">>> FreeCAD Core: " + (if (caps.freeCadBaseAvailable) "INTEGRADO" else "NO COMPILADO") + "\n"
-            msg += ">>> Módulos de Modelado: " + (if (caps.partModuleAvailable) "SOPORTADO" else "NO DISPONIBLE") + "\n"
-            msg += ">>> Intérprete Python: " + (if (caps.pythonAvailable) "HABILITADO" else "NO COMPILADO") + "\n"
-            _pythonConsoleOutput.value += msg
+            // Log status of the backend to the user console with real honest information
+            var msg = "Biblioteca JNI: " + (if (caps.nativeLibraryLoaded) "CARGADA" else "NO CARGADA") + "\n"
+            msg += "OpenCASCADE: " + (if (caps.occtAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
+            msg += "FreeCAD Base: " + (if (caps.freeCadBaseAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
+            msg += "FreeCAD App: " + (if (caps.freeCadAppAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
+            msg += "Part: " + (if (caps.partModuleAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
+            msg += "Python: " + (if (caps.pythonAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
+            msg += "STEP: " + (if (caps.stepImportAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
+            msg += "FCStd completo: " + (if (caps.fcStdCoreAvailable) "DISPONIBLE" else "NO DISPONIBLE") + "\n"
+            _pythonConsoleOutput.value = msg
             
             // Create default active document
             val defaultId = FreeCadNative.createDocument("Modelo_Activo")
@@ -107,6 +111,9 @@ class CadViewModel : ViewModel() {
                     is ImportState.Success -> {
                         _pythonConsoleOutput.value += ">>> ¡Importación completada con éxito!\n"
                         _pythonConsoleOutput.value += ">>> Sólidos: ${state.objectCount}, Vértices: ${state.vertexCount}, Triángulos: ${state.triangleCount}\n"
+                        if (fileName.lowercase().endsWith(".fcstd") || fileName.lowercase().endsWith(".fcstd1")) {
+                            _pythonConsoleOutput.value += ">>> FCStd abierto parcialmente mediante las shapes BRep internas.\n>>> No se reconstruyó el historial paramétrico.\n>>> Los placements y dependencias pueden no estar completos.\n"
+                        }
                     }
                     is ImportState.Error -> {
                         _pythonConsoleOutput.value += ">>> ERROR EN IMPORTACIÓN [${state.code}]: ${state.message}\n"
@@ -118,21 +125,24 @@ class CadViewModel : ViewModel() {
             if (transaction != null) {
                 // Transactional commit!
                 val oldDocId = _activeDocId.value
-                transaction.commit { tempDocId ->
+                transaction.commit { tempDocId, importedObjects ->
                     _activeDocId.value = tempDocId
                     _activeDocName.value = fileName
                     
-                    // Populate objects tree with a single main geometry item representing the imported CAD file
-                    val rootObj = CadObjectState(
-                        id = 1L, // Main ID
-                        name = fileName,
-                        type = if (fileName.lowercase().endsWith(".fcstd")) "FCSTD_GEOMETRY" else "STEP_GEOMETRY",
-                        dim1 = 0f,
-                        dim2 = 0f,
-                        dim3 = 0f
-                    )
-                    _objectsList.value = listOf(rootObj)
-                    _selectedObjectId.value = 1L
+                    // Populate objects tree with real native-imported objects
+                    val objects = importedObjects.map { obj ->
+                        CadObjectState(
+                            id = obj.objectId,
+                            name = obj.name,
+                            type = obj.type,
+                            dim1 = 0f,
+                            dim2 = 0f,
+                            dim3 = 0f,
+                            isVisible = obj.visible
+                        )
+                    }
+                    _objectsList.value = objects
+                    _selectedObjectId.value = objects.firstOrNull()?.id
                 }
 
                 // Close previous document after switching safely

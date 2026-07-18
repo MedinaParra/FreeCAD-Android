@@ -11,5 +11,6 @@ data class NativeCapabilities(
     val partModuleAvailable: Boolean,
     val pythonAvailable: Boolean,
     val stepImportAvailable: Boolean,
-    val fcStdImportAvailable: Boolean
+    val fcStdBrepExtractionAvailable: Boolean,
+    val fcStdCoreAvailable: Boolean
 )

@@ -222,12 +222,16 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportStep(
         JNIEnv* env, jobject thiz, jstring name, jstring file_path) {
     
     jclass cls = env->FindClass("com/medinaparra/freecadandroid/nativebridge/CadImportResult");
-    jmethodID constr = env->GetMethodID(cls, "<init>", "(ZJIIILjava/lang/String;Ljava/lang/String;)V");
+    jmethodID constr = env->GetMethodID(cls, "<init>", "(ZJ[Lcom/medinaparra/freecadandroid/nativebridge/ImportedObjectInfo;IILjava/lang/String;Ljava/lang/String;)V");
+
+    jclass objInfoCls = env->FindClass("com/medinaparra/freecadandroid/nativebridge/ImportedObjectInfo");
+    jmethodID objInfoConstr = env->GetMethodID(objInfoCls, "<init>", "(JLjava/lang/String;Ljava/lang/String;ZII)V");
 
     if (!g_engine) {
         jstring code = env->NewStringUTF("ENGINE_NOT_INIT");
         jstring msg = env->NewStringUTF("El motor nativo CAD no se inicializó correctamente.");
-        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, (jint)0, (jint)0, (jint)0, code, msg);
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
     }
 
     std::string docName = jstringToString(env, name);
@@ -241,7 +245,8 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportStep(
     if (!doc) {
         jstring code = env->NewStringUTF("DOC_CREATION_FAILED");
         jstring msg = env->NewStringUTF("Error creando el espacio de trabajo.");
-        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, (jint)0, (jint)0, (jint)0, code, msg);
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
     }
 
     bool success = doc->loadStep(path);
@@ -256,7 +261,8 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportStep(
         jstring code = env->NewStringUTF("STEP_LOAD_FAILED");
         jstring msg = env->NewStringUTF("El importador STEP de OpenCASCADE reportó un error de lectura.");
 #endif
-        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, (jint)0, (jint)0, (jint)0, code, msg);
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
     }
 
     // Cache mesh and calculate statistics
@@ -267,12 +273,51 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportStep(
         g_meshCache[docId] = mesh;
     }
 
+    if (mesh.vertices.empty() || mesh.indices.empty()) {
+        g_engine->closeDocument(docId);
+        jstring code = env->NewStringUTF("EMPTY_MESH");
+        jstring msg = env->NewStringUTF("El archivo no generó geometría o malla 3D válida.");
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
+    }
+
     jint vertexCount = static_cast<jint>(mesh.vertices.size());
     jint triangleCount = static_cast<jint>(mesh.indices.size() / 3);
 
     LOGI("nativeImportStep: Import succeeded. Vertices: %d, Triangles: %d", vertexCount, triangleCount);
 
-    return env->NewObject(cls, constr, JNI_TRUE, static_cast<jlong>(docId), (jint)1, vertexCount, triangleCount, nullptr, nullptr);
+    int importedCount = 0;
+    for (const auto& pair : doc->objects) {
+        if (pair.second->type == ObjectType::IMPORTED) {
+            importedCount++;
+        }
+    }
+
+    jobjectArray objArray = env->NewObjectArray(importedCount, objInfoCls, nullptr);
+    int idx = 0;
+    for (const auto& pair : doc->objects) {
+        if (pair.second->type == ObjectType::IMPORTED) {
+            jstring objName = env->NewStringUTF(pair.second->name.c_str());
+            jstring objType = env->NewStringUTF("IMPORTED");
+            jboolean visible = pair.second->visible ? JNI_TRUE : JNI_FALSE;
+            
+            jobject objInfo = env->NewObject(objInfoCls, objInfoConstr, 
+                static_cast<jlong>(pair.second->id),
+                objName,
+                objType,
+                visible,
+                (jint)0,
+                (jint)triangleCount * 3
+            );
+            env->SetObjectArrayElement(objArray, idx, objInfo);
+            env->DeleteLocalRef(objInfo);
+            env->DeleteLocalRef(objName);
+            env->DeleteLocalRef(objType);
+            idx++;
+        }
+    }
+
+    return env->NewObject(cls, constr, JNI_TRUE, static_cast<jlong>(docId), objArray, vertexCount, triangleCount, nullptr, nullptr);
 }
 
 JNIEXPORT jobject JNICALL
@@ -280,12 +325,16 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportBrep(
         JNIEnv* env, jobject thiz, jstring name, jstring file_path) {
     
     jclass cls = env->FindClass("com/medinaparra/freecadandroid/nativebridge/CadImportResult");
-    jmethodID constr = env->GetMethodID(cls, "<init>", "(ZJIIILjava/lang/String;Ljava/lang/String;)V");
+    jmethodID constr = env->GetMethodID(cls, "<init>", "(ZJ[Lcom/medinaparra/freecadandroid/nativebridge/ImportedObjectInfo;IILjava/lang/String;Ljava/lang/String;)V");
+
+    jclass objInfoCls = env->FindClass("com/medinaparra/freecadandroid/nativebridge/ImportedObjectInfo");
+    jmethodID objInfoConstr = env->GetMethodID(objInfoCls, "<init>", "(JLjava/lang/String;Ljava/lang/String;ZII)V");
 
     if (!g_engine) {
         jstring code = env->NewStringUTF("ENGINE_NOT_INIT");
         jstring msg = env->NewStringUTF("El motor nativo CAD no se inicializó correctamente.");
-        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, (jint)0, (jint)0, (jint)0, code, msg);
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
     }
 
     std::string docName = jstringToString(env, name);
@@ -299,7 +348,8 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportBrep(
     if (!doc) {
         jstring code = env->NewStringUTF("DOC_CREATION_FAILED");
         jstring msg = env->NewStringUTF("Error creando el espacio de trabajo.");
-        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, (jint)0, (jint)0, (jint)0, code, msg);
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
     }
 
     bool success = doc->loadBrep(path);
@@ -314,7 +364,8 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportBrep(
         jstring code = env->NewStringUTF("BREP_LOAD_FAILED");
         jstring msg = env->NewStringUTF("El importador BRep de OpenCASCADE reportó un error de lectura.");
 #endif
-        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, (jint)0, (jint)0, (jint)0, code, msg);
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
     }
 
     // Cache mesh and calculate statistics
@@ -325,12 +376,51 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeImportBrep(
         g_meshCache[docId] = mesh;
     }
 
+    if (mesh.vertices.empty() || mesh.indices.empty()) {
+        g_engine->closeDocument(docId);
+        jstring code = env->NewStringUTF("EMPTY_MESH");
+        jstring msg = env->NewStringUTF("El archivo no generó geometría o malla 3D válida.");
+        jobjectArray emptyArray = env->NewObjectArray(0, objInfoCls, nullptr);
+        return env->NewObject(cls, constr, JNI_FALSE, (jlong)0, emptyArray, (jint)0, (jint)0, code, msg);
+    }
+
     jint vertexCount = static_cast<jint>(mesh.vertices.size());
     jint triangleCount = static_cast<jint>(mesh.indices.size() / 3);
 
     LOGI("nativeImportBrep: Import succeeded. Vertices: %d, Triangles: %d", vertexCount, triangleCount);
 
-    return env->NewObject(cls, constr, JNI_TRUE, static_cast<jlong>(docId), (jint)1, vertexCount, triangleCount, nullptr, nullptr);
+    int importedCount = 0;
+    for (const auto& pair : doc->objects) {
+        if (pair.second->type == ObjectType::IMPORTED) {
+            importedCount++;
+        }
+    }
+
+    jobjectArray objArray = env->NewObjectArray(importedCount, objInfoCls, nullptr);
+    int idx = 0;
+    for (const auto& pair : doc->objects) {
+        if (pair.second->type == ObjectType::IMPORTED) {
+            jstring objName = env->NewStringUTF(pair.second->name.c_str());
+            jstring objType = env->NewStringUTF("IMPORTED");
+            jboolean visible = pair.second->visible ? JNI_TRUE : JNI_FALSE;
+            
+            jobject objInfo = env->NewObject(objInfoCls, objInfoConstr, 
+                static_cast<jlong>(pair.second->id),
+                objName,
+                objType,
+                visible,
+                (jint)0,
+                (jint)triangleCount * 3
+            );
+            env->SetObjectArrayElement(objArray, idx, objInfo);
+            env->DeleteLocalRef(objInfo);
+            env->DeleteLocalRef(objName);
+            env->DeleteLocalRef(objType);
+            idx++;
+        }
+    }
+
+    return env->NewObject(cls, constr, JNI_TRUE, static_cast<jlong>(docId), objArray, vertexCount, triangleCount, nullptr, nullptr);
 }
 
 JNIEXPORT jobject JNICALL
@@ -342,16 +432,13 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeGetSceneMes
         auto doc = g_engine->getDocument(docId);
         if (!doc) return nullptr;
 
-        // Retrieve and cache mesh data safely
-        MeshData mesh;
+        // Retrieve and cache mesh data safely under mutex
+        MeshData cachedMesh;
         {
             std::lock_guard<std::mutex> lock(g_meshCacheMutex);
-            mesh = doc->getSceneMesh();
-            g_meshCache[docId] = mesh;
+            cachedMesh = doc->getSceneMesh();
+            g_meshCache[docId] = cachedMesh;
         }
-
-        // We reference the mesh stored inside our thread-safe cache to avoid raw pointer invalidation
-        const MeshData& cachedMesh = g_meshCache[docId];
 
         jint vertexCount = static_cast<jint>(cachedMesh.vertices.size());
         jint indexCount = static_cast<jint>(cachedMesh.indices.size());
@@ -359,16 +446,29 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeGetSceneMes
         jobject vertexBufObj = nullptr;
         jobject indexBufObj = nullptr;
 
-        if (vertexCount > 0) {
-            void* vertDataPtr = const_cast<void*>(static_cast<const void*>(cachedMesh.vertices.data()));
+        jclass byteBufCls = env->FindClass("java/nio/ByteBuffer");
+        jmethodID allocateDirectMethod = env->GetStaticMethodID(byteBufCls, "allocateDirect", "(I)Ljava/nio/ByteBuffer;");
+
+        if (vertexCount > 0 && allocateDirectMethod) {
             jlong vertSizeInBytes = vertexCount * sizeof(Vertex);
-            vertexBufObj = env->NewDirectByteBuffer(vertDataPtr, vertSizeInBytes);
+            vertexBufObj = env->CallStaticObjectMethod(byteBufCls, allocateDirectMethod, static_cast<jint>(vertSizeInBytes));
+            if (vertexBufObj) {
+                void* vertexAddr = env->GetDirectBufferAddress(vertexBufObj);
+                if (vertexAddr) {
+                    std::memcpy(vertexAddr, cachedMesh.vertices.data(), vertSizeInBytes);
+                }
+            }
         }
 
-        if (indexCount > 0) {
-            void* indexDataPtr = const_cast<void*>(static_cast<const void*>(cachedMesh.indices.data()));
+        if (indexCount > 0 && allocateDirectMethod) {
             jlong indexSizeInBytes = indexCount * sizeof(uint32_t);
-            indexBufObj = env->NewDirectByteBuffer(indexDataPtr, indexSizeInBytes);
+            indexBufObj = env->CallStaticObjectMethod(byteBufCls, allocateDirectMethod, static_cast<jint>(indexSizeInBytes));
+            if (indexBufObj) {
+                void* indexAddr = env->GetDirectBufferAddress(indexBufObj);
+                if (indexAddr) {
+                    std::memcpy(indexAddr, cachedMesh.indices.data(), indexSizeInBytes);
+                }
+            }
         }
 
         jclass cls = env->FindClass("com/medinaparra/freecadandroid/nativebridge/NativeSceneMesh");
@@ -405,7 +505,7 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeExecutePyth
 
     // Report that execution is simulated or unsupported to prevent fake feedback
     jstring stdoutStr = env->NewStringUTF("");
-    jstring stderrStr = env->NewStringUTF("Intérprete de Python embebido no está compilado en esta versión de Android.");
+    jstring stderrStr = env->NewStringUTF("Runtime Python no implementado.\nFaltan CPython y los bindings originales de FreeCAD y Part.");
 
     return env->NewObject(cls, constr, JNI_FALSE, stdoutStr, stderrStr, static_cast<jlong>(0));
 }
@@ -468,7 +568,7 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeGetNativeCa
         LOGE("Failed to find NativeCapabilities class");
         return nullptr;
     }
-    jmethodID constr = env->GetMethodID(cls, "<init>", "(ZZZZZZZZ)V");
+    jmethodID constr = env->GetMethodID(cls, "<init>", "(ZZZZZZZZZ)V");
     if (!constr) {
         LOGE("Failed to find NativeCapabilities constructor");
         return nullptr;
@@ -486,9 +586,10 @@ Java_com_medinaparra_freecadandroid_nativebridge_FreeCadNative_nativeGetNativeCa
     jboolean freecadApp = JNI_FALSE;
     jboolean partModule = JNI_FALSE;
     jboolean python = JNI_FALSE;
-    jboolean fcstd = JNI_FALSE;
+    jboolean fcstdBrep = JNI_TRUE; // Extracción parcial BRep soportada en Kotlin
+    jboolean fcstdCore = JNI_FALSE; // FreeCAD Core real no disponible aún
 
-    return env->NewObject(cls, constr, loaded, occt, freecadBase, freecadApp, partModule, python, step, fcstd);
+    return env->NewObject(cls, constr, loaded, occt, freecadBase, freecadApp, partModule, python, step, fcstdBrep, fcstdCore);
 }
 
 }

@@ -1263,20 +1263,22 @@ fun MainScreen(viewModel: CadViewModel = viewModel()) {
                                     onClick = {
                                         // Execute macro
                                         isMacroRunning = true
-                                        viewModel.appendConsoleLog(">>> Executing macro...\n")
+                                        viewModel.appendConsoleLog(">>> Ejecutando macro...\n")
                                         coroutineScope.launch {
-                                            delay(500) // Simulate processing delay
-                                            
                                             val result = FreeCadNative.executePythonMacro(activeDocId, macroInputCode, maxExecutionTimeSecs * 1000L)
-                                            if (result != null && result.success) {
-                                                viewModel.appendConsoleLog(result.stdout + "\n>>> Done. (${result.executionTimeMs} ms)\n")
+                                            if (result != null) {
+                                                if (result.success) {
+                                                    viewModel.appendConsoleLog(result.stdout + "\n>>> Done. (${result.executionTimeMs} ms)\n")
+                                                } else {
+                                                    viewModel.appendConsoleLog(">>> Macro falló.\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}\n")
+                                                }
                                             } else {
-                                                viewModel.appendConsoleLog(">>> Process killed/timed out.\n")
+                                                viewModel.appendConsoleLog(">>> Macro finalizada o cancelada.\n")
                                             }
                                             isMacroRunning = false
                                         }
                                     },
-                                    enabled = !isMacroRunning,
+                                    enabled = !isMacroRunning && nativeCapabilities.pythonAvailable,
                                     colors = ButtonDefaults.buttonColors(containerColor = accentColor),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                     modifier = Modifier.height(26.dp)
